@@ -49,6 +49,33 @@ function releaseWakeLock() {
   }
 }
 
+// --- Safari内に動画データを一切残さないクリーンアップ処理 ---
+try {
+  if (typeof indexedDB !== 'undefined') {
+    indexedDB.deleteDatabase('VideoConverterBackupDB');
+  }
+} catch (e) {}
+
+function cleanupAllTempVideoData() {
+  if (convertedUrl) {
+    try { URL.revokeObjectURL(convertedUrl); } catch (e) {}
+    convertedUrl = null;
+  }
+  if (currentFileUrl) {
+    try { URL.revokeObjectURL(currentFileUrl); } catch (e) {}
+    currentFileUrl = null;
+  }
+  if (downloadBtn) {
+    downloadBtn.removeAttribute('href');
+  }
+  convertedBlob = null;
+  convertedFile = null;
+  currentFile = null;
+}
+
+window.addEventListener('pagehide', cleanupAllTempVideoData);
+window.addEventListener('beforeunload', cleanupAllTempVideoData);
+
 // --- DOM 要素 ---
 const videoInput = document.getElementById('videoInput');
 const selectTitle = document.getElementById('selectTitle');
@@ -96,6 +123,7 @@ const progressStatusText = document.getElementById('progressStatusText');
 const resSizeBefore = document.getElementById('resSizeBefore');
 const resSizeAfter = document.getElementById('resSizeAfter');
 const resMetaInfo = document.getElementById('resMetaInfo');
+const resultPreviewContainer = document.getElementById('resultPreviewContainer');
 const resultVideo = document.getElementById('resultVideo');
 const resultImage = document.getElementById('resultImage');
 const resultAudio = document.getElementById('resultAudio');
@@ -177,7 +205,7 @@ function findMvhdCreationTimeInBuffer(buffer) {
 
 async function extractOriginalCreationDate(file) {
   try {
-    const chunkSize = 256 * 1024; // 256KBのみ検査
+    const chunkSize = 128 * 1024;
     const headBuffer = await file.slice(0, Math.min(file.size, chunkSize)).arrayBuffer();
     const headTime = findMvhdCreationTimeInBuffer(headBuffer);
     if (headTime) return headTime;
@@ -192,24 +220,27 @@ async function extractOriginalCreationDate(file) {
   return (file && file.lastModified) || Date.now();
 }
 
-// 先頭・末尾の64KBのみを書き換える超省メモリ方式
-async function patchMp4CreationTime(mp4Blob, targetTimeMs) {
+// 単一バッファの先頭64KB・末尾64KB範囲のみ高速に日付パッチを行う（複合Blobクラッシュを完全回避）
+async function buildPatchedMp4Blob(chunks, targetTimeMs) {
+  const rawBlob = new Blob(chunks, { type: 'video/mp4' });
   try {
-    const totalSize = mp4Blob.size;
-    if (totalSize < 32) return mp4Blob;
-
+    // 25MB以下の場合のみヘッダ書き換えを行い、それ以上の大容量動画はメモリ保護のためそのまま返す
+    if (rawBlob.size > 25 * 1024 * 1024 || rawBlob.size < 32) {
+      return rawBlob;
+    }
+    const buffer = await rawBlob.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    const view = new DataView(buffer);
+    const len = bytes.length;
     const targetMacSec = (Math.max(0, Math.floor(targetTimeMs / 1000) + MAC_EPOCH_OFFSET_SEC)) >>> 0;
 
-    const patchBuffer = (buffer) => {
-      const bytes = new Uint8Array(buffer);
-      const view = new DataView(buffer);
-      const len = bytes.length;
-
-      for (let i = 4; i <= len - 24; i++) {
+    const patchRange = (startIdx, endIdx) => {
+      const s = Math.max(4, startIdx);
+      const e = Math.min(len - 24, endIdx);
+      for (let i = s; i <= e; i++) {
         const isMvhd = bytes[i] === 0x6d && bytes[i + 1] === 0x76 && bytes[i + 2] === 0x68 && bytes[i + 3] === 0x64;
         const isTkhd = bytes[i] === 0x74 && bytes[i + 1] === 0x6b && bytes[i + 2] === 0x68 && bytes[i + 3] === 0x64;
         const isMdhd = bytes[i] === 0x6d && bytes[i + 1] === 0x64 && bytes[i + 2] === 0x68 && bytes[i + 3] === 0x64;
-
         if (isMvhd || isTkhd || isMdhd) {
           const boxSize = view.getUint32(i - 4, false);
           const version = bytes[i + 4];
@@ -226,21 +257,17 @@ async function patchMp4CreationTime(mp4Blob, targetTimeMs) {
           }
         }
       }
-      return buffer;
     };
 
-    const SLICE_SIZE = 64 * 1024; // 64KBのみ
-    if (totalSize <= SLICE_SIZE * 2) {
-      const buf = patchBuffer(await mp4Blob.arrayBuffer());
-      return new Blob([buf], { type: 'video/mp4' });
-    } else {
-      const headBuf = patchBuffer(await mp4Blob.slice(0, SLICE_SIZE).arrayBuffer());
-      const middleBlob = mp4Blob.slice(SLICE_SIZE, totalSize - SLICE_SIZE);
-      const tailBuf = patchBuffer(await mp4Blob.slice(totalSize - SLICE_SIZE, totalSize).arrayBuffer());
-      return new Blob([headBuf, middleBlob, tailBuf], { type: 'video/mp4' });
+    const scanBytes = 65536;
+    patchRange(4, scanBytes);
+    if (len > scanBytes * 2) {
+      patchRange(len - scanBytes, len - 24);
     }
+
+    return new Blob([buffer], { type: 'video/mp4' });
   } catch (e) {
-    return mp4Blob;
+    return rawBlob;
   }
 }
 
@@ -249,6 +276,8 @@ if (videoInput) {
   videoInput.addEventListener('change', async (e) => {
     const file = e.target.files && e.target.files[0];
     if (!file) return;
+
+    cleanupAllTempVideoData();
 
     if (selectTitle) selectTitle.textContent = '動画を読み込み中...';
     if (selectDesc) selectDesc.textContent = `${file.name || '動画'} (${formatBytes(file.size)})`;
@@ -295,7 +324,11 @@ if (videoInput) {
         applyCropPreset('none');
 
         if (selectSection) selectSection.classList.add('hidden');
-        if (editorSection) editorSection.classList.remove('hidden');
+        if (resultSection) resultSection.classList.add('hidden');
+        if (editorSection) {
+          editorSection.style.cssText = '';
+          editorSection.classList.remove('hidden');
+        }
         if (typeof lucide !== 'undefined') lucide.createIcons();
       };
 
@@ -316,10 +349,14 @@ if (videoInput) {
 
 if (reselectBtn) {
   reselectBtn.addEventListener('click', () => {
+    cleanupAllTempVideoData();
     if (videoInput) videoInput.value = '';
     if (selectTitle) selectTitle.textContent = '写真・動画を選択';
     if (selectDesc) selectDesc.textContent = 'タップしてカメラロールから動画を選択';
-    if (editorSection) editorSection.classList.add('hidden');
+    if (editorSection) {
+      editorSection.style.cssText = '';
+      editorSection.classList.add('hidden');
+    }
     if (resultSection) resultSection.classList.add('hidden');
     if (selectSection) selectSection.classList.remove('hidden');
   });
@@ -612,8 +649,8 @@ if (cancelConvertBtn) {
     }
     if (progressSection) progressSection.classList.add('hidden');
     if (editorSection) {
-      editorSection.classList.remove('hidden');
       editorSection.style.cssText = '';
+      editorSection.classList.remove('hidden');
     }
     if (progressBar) progressBar.style.width = '0%';
     if (progressPercent) progressPercent.textContent = '0%';
@@ -628,8 +665,6 @@ if (startConvertBtn) {
     isCancelled = false;
     await requestWakeLock();
 
-    // ★重要: iOS SafariでvideoPreviewをdisplay:none(hidden)にするとGPUデコーダが壊れて完了時にクラッシュするため、
-    // 画面外・透明化して描画状態を維持する
     if (editorSection) {
       editorSection.style.cssText = 'position:fixed; left:-9999px; top:0; width:320px; height:240px; opacity:0.01; pointer-events:none; overflow:hidden;';
     }
@@ -662,13 +697,9 @@ if (startConvertBtn) {
   });
 }
 
-// 1. 動画の切り取り＆エンコード（iOS Safari クラッシュ完全対策版）
+// 1. 動画の切り取り＆エンコード（終了時のWebKitクラッシュ完全防止版）
 async function convertToVideo() {
   if (progressStatusText) progressStatusText.textContent = '動画を切り取り＆エンコード中...';
-
-  if (!videoPreview.src && currentFileUrl) {
-    videoPreview.src = currentFileUrl;
-  }
 
   let sx = 0, sy = 0, sw = originalWidth, sh = originalHeight;
   if (cropSettings.enabled) {
@@ -690,7 +721,6 @@ async function convertToVideo() {
       outH = Math.round(target * (sh / sw));
     }
   } else {
-    // ★重要: iOS SafariのMediaRecorderは長辺が1280pxを超えるとファイナライズ時にGPUメモリ上限でクラッシュするため安全上限(1280px)に収める
     const maxSafeSide = 1280;
     const maxCurrent = Math.max(outW, outH);
     if (maxCurrent > maxSafeSide) {
@@ -699,7 +729,6 @@ async function convertToVideo() {
       outH = Math.round(outH * ratio);
     }
   }
-  // H.264 ハードウェアエンコーダ必須の16の倍数（または偶数）に丸める
   outW = Math.max(16, Math.floor(outW / 4) * 4);
   outH = Math.max(16, Math.floor(outH / 4) * 4);
 
@@ -709,7 +738,7 @@ async function convertToVideo() {
   const ctx = canvas.getContext('2d', { alpha: false });
 
   let bitrate = 2500000;
-  if (outputQuality === 'high') bitrate = 5000000;
+  if (outputQuality === 'high') bitrate = 4500000;
   if (outputQuality === 'small') bitrate = 1200000;
 
   const canvasStream = canvas.captureStream(24);
@@ -739,10 +768,7 @@ async function convertToVideo() {
     setTimeout(r, 300);
   });
 
-  // 最初の1フレームを描画してからスタート
   ctx.drawImage(videoPreview, sx, sy, sw, sh, 0, 0, outW, outH);
-
-  // ★重要: タイムスライスなしの start() にすることで、細切れチャンク大量生成によるSafariクラッシュを防ぐ
   recorder.start();
 
   try {
@@ -785,11 +811,7 @@ async function convertToVideo() {
 
   await new Promise(resolve => recorder.onstop = resolve);
 
-  // GPU・ストリームメモリを即座に解放
-  try { canvasStream.getTracks().forEach(t => t.stop()); } catch (e) {}
-  canvas.width = 1;
-  canvas.height = 1;
-
+  // ★重要: videoPreview.load()やcanvasStream.stop()をここで呼ばない（WebKitのC++ Use-After-Freeクラッシュ防止）
   if (editorSection) {
     editorSection.style.cssText = '';
     editorSection.classList.add('hidden');
@@ -802,7 +824,13 @@ async function convertToVideo() {
 
   const finalExt = mimeType.includes('mp4') ? 'mp4' : 'webm';
   const cleanMime = finalExt === 'mp4' ? 'video/mp4' : 'video/webm';
-  convertedBlob = new Blob(chunks, { type: cleanMime });
+  const targetDateMs = originalCreationTimeMs || (currentFile && currentFile.lastModified) || Date.now();
+
+  if (finalExt === 'mp4') {
+    convertedBlob = await buildPatchedMp4Blob(chunks, targetDateMs);
+  } else {
+    convertedBlob = new Blob(chunks, { type: cleanMime });
+  }
   chunks.length = 0;
 
   await finishConversion(finalExt);
@@ -924,77 +952,90 @@ function audioBufferToWavBlob(buffer) {
   return new Blob([out.buffer], { type: 'audio/wav' });
 }
 
-// --- 完了処理 ---
+// --- 完了処理（Safari内にデータを残さない＆クラッシュ防止） ---
 async function finishConversion(ext) {
   releaseWakeLock();
   document.title = '✅【変換完了】ビデオコンバーター';
 
-  // 編集用ビデオのメモリを解放して完了画面のクラッシュを防ぐ
-  try {
-    videoPreview.pause();
-    videoPreview.removeAttribute('src');
-    videoPreview.load();
-  } catch (e) {}
-
   const targetDateMs = originalCreationTimeMs || (currentFile && currentFile.lastModified) || Date.now();
   const finalFileName = getPreservedFileName(currentFile ? currentFile.name : 'video', ext);
+  const cleanMime = ext === 'mp4' ? 'video/mp4' : (ext === 'gif' ? 'image/gif' : (ext === 'wav' ? 'audio/wav' : 'video/webm'));
+  const origSize = currentFile ? currentFile.size : convertedBlob.size;
 
-  if (ext === 'mp4') {
-    if (progressStatusText) progressStatusText.textContent = '元の撮影日時・タイトルを書き込み中...';
-    convertedBlob = await patchMp4CreationTime(convertedBlob, targetDateMs);
+  // 元動画のBlob URLは変換完了時点で不要なので即座に破棄
+  if (currentFileUrl) {
+    try { URL.revokeObjectURL(currentFileUrl); } catch (e) {}
+    currentFileUrl = null;
   }
 
-  const cleanMime = ext === 'mp4' ? 'video/mp4' : (ext === 'gif' ? 'image/gif' : (ext === 'wav' ? 'audio/wav' : 'video/webm'));
+  renderResultScreen({
+    blob: convertedBlob,
+    fileName: finalFileName,
+    mimeType: cleanMime,
+    ext: ext,
+    originalSize: origSize,
+    targetDateMs: targetDateMs
+  });
+}
 
+function renderResultScreen({ blob, fileName, mimeType, ext, originalSize, targetDateMs }) {
+  convertedBlob = blob;
   try {
-    convertedFile = new File([convertedBlob], finalFileName, {
-      type: cleanMime,
+    convertedFile = new File([blob], fileName, {
+      type: mimeType,
       lastModified: targetDateMs
     });
   } catch (e) {
-    convertedFile = convertedBlob;
-    convertedFile.name = finalFileName;
+    convertedFile = blob;
+    convertedFile.name = fileName;
   }
 
   if (convertedUrl) {
     try { URL.revokeObjectURL(convertedUrl); } catch (e) {}
   }
-  convertedUrl = URL.createObjectURL(convertedBlob);
+  convertedUrl = URL.createObjectURL(blob);
 
+  if (selectSection) selectSection.classList.add('hidden');
+  if (editorSection) editorSection.classList.add('hidden');
   if (progressSection) progressSection.classList.add('hidden');
   if (resultSection) resultSection.classList.remove('hidden');
 
-  if (resSizeBefore && currentFile) {
-    resSizeBefore.textContent = formatBytes(currentFile.size);
+  if (resSizeBefore) {
+    resSizeBefore.textContent = formatBytes(originalSize);
   }
-  if (resSizeAfter && currentFile) {
-    const pct = currentFile.size > 0 ? Math.round((1 - convertedBlob.size / currentFile.size) * 100) : 0;
-    resSizeAfter.textContent = `${formatBytes(convertedBlob.size)} (${pct}% 削減)`;
+  if (resSizeAfter) {
+    const pct = originalSize > 0 ? Math.round((1 - blob.size / originalSize) * 100) : 0;
+    resSizeAfter.textContent = `${formatBytes(blob.size)} (${pct}% 削減)`;
   }
   if (resMetaInfo) {
-    resMetaInfo.textContent = `📄 ${finalFileName} ｜ 📅 ${formatDateJP(targetDateMs)}`;
+    resMetaInfo.textContent = `📄 ${fileName} ｜ 📅 ${formatDateJP(targetDateMs)}`;
   }
 
-  if (resultVideo) resultVideo.classList.add('hidden');
+  // ★重要: 完了直後に <video id="resultVideo"> にBlob URLを読み込ませるとiOS SafariのAVPlayerがクラッシュするため、
+  // 動画の場合は自動読み込みせず、すぐ下の「写真アプリに保存」ボタンをそのまま使えるようにする
+  if (resultVideo) {
+    resultVideo.removeAttribute('src');
+    resultVideo.classList.add('hidden');
+  }
   if (resultImage) resultImage.classList.add('hidden');
   if (resultAudio) resultAudio.classList.add('hidden');
 
   if (ext === 'gif' && resultImage) {
     resultImage.src = convertedUrl;
     resultImage.classList.remove('hidden');
+    if (resultPreviewContainer) resultPreviewContainer.classList.remove('hidden');
   } else if (ext === 'wav' && resultAudio) {
     resultAudio.src = convertedUrl;
     resultAudio.classList.remove('hidden');
-  } else if (resultVideo) {
-    // 自動フルデコードによるメモリスパイクを防ぐため preload="none" にする
-    resultVideo.preload = 'none';
-    resultVideo.src = convertedUrl;
-    resultVideo.classList.remove('hidden');
+    if (resultPreviewContainer) resultPreviewContainer.classList.remove('hidden');
+  } else if (resultPreviewContainer) {
+    // 動画時はクラッシュ防止のためプレビュー枠を隠して即座に保存ボタンを押せるようにする
+    resultPreviewContainer.classList.add('hidden');
   }
 
   if (downloadBtn) {
     downloadBtn.href = convertedUrl;
-    downloadBtn.download = finalFileName;
+    downloadBtn.download = fileName;
   }
 
   if (typeof lucide !== 'undefined') lucide.createIcons();
@@ -1009,6 +1050,12 @@ if (shareBtn) {
         await navigator.share({
           files: [convertedFile]
         });
+        // 写真アプリに保存し終わったら、Safari内の動画データを即座に完全消去して初期画面に戻す
+        cleanupAllTempVideoData();
+        document.title = 'Video Converter - ビデオコンバーター';
+        if (resultSection) resultSection.classList.add('hidden');
+        if (selectSection) selectSection.classList.remove('hidden');
+        if (videoInput) videoInput.value = '';
       } catch (err) {
         if (err.name !== 'AbortError') console.error('Share failed:', err);
       }
@@ -1020,17 +1067,10 @@ if (shareBtn) {
 
 if (resetBtn) {
   resetBtn.addEventListener('click', () => {
+    cleanupAllTempVideoData();
     document.title = 'Video Converter - ビデオコンバーター';
-    if (resultVideo) {
-      try {
-        resultVideo.pause();
-        resultVideo.removeAttribute('src');
-        resultVideo.load();
-      } catch (e) {}
-    }
     if (resultSection) resultSection.classList.add('hidden');
     if (selectSection) selectSection.classList.remove('hidden');
     if (videoInput) videoInput.value = '';
-    currentFile = null;
   });
 }
