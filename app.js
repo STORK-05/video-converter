@@ -88,13 +88,15 @@ function formatTime(sec) {
 }
 
 // --- 動画選択 ---
-selectBtn.addEventListener('click', () => {
-  videoInput.click();
-});
+const selectTitle = document.getElementById('selectTitle');
+const selectDesc = document.getElementById('selectDesc');
 
 videoInput.addEventListener('change', async (e) => {
   const file = e.target.files && e.target.files[0];
   if (!file) return;
+
+  if (selectTitle) selectTitle.textContent = '動画を読み込み中...';
+  if (selectDesc) selectDesc.textContent = 'しばらくお待ちください';
 
   currentFile = file;
   fileMetaName.textContent = file.name || 'video';
@@ -104,8 +106,13 @@ videoInput.addEventListener('change', async (e) => {
   videoPreview.muted = true;
   videoPreview.playsInline = true;
   videoPreview.src = fileUrl;
+  videoPreview.load();
 
+  let hasLoaded = false;
   const onMetaLoaded = () => {
+    if (hasLoaded) return;
+    hasLoaded = true;
+
     originalWidth = videoPreview.videoWidth || 1920;
     originalHeight = videoPreview.videoHeight || 1080;
     videoDuration = videoPreview.duration || 10;
@@ -128,15 +135,21 @@ videoInput.addEventListener('change', async (e) => {
   };
 
   videoPreview.onloadedmetadata = onMetaLoaded;
+  videoPreview.onloadeddata = onMetaLoaded;
+  videoPreview.oncanplay = onMetaLoaded;
+
+  // 万が一のタイムアウトフォールバック (0.8秒)
   setTimeout(() => {
-    if (editorSection.classList.contains('hidden')) {
+    if (!hasLoaded) {
       onMetaLoaded();
     }
-  }, 1000);
+  }, 800);
 });
 
 reselectBtn.addEventListener('click', () => {
   videoInput.value = '';
+  if (selectTitle) selectTitle.textContent = '写真・動画を選択';
+  if (selectDesc) selectDesc.textContent = 'タップしてカメラロールから動画を選択';
   editorSection.classList.add('hidden');
   resultSection.classList.add('hidden');
   selectSection.classList.remove('hidden');

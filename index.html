@@ -14,7 +14,6 @@
   
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/lucide@latest"></script>
-  <!-- 軽量GIF生成ライブラリ (わずか数十KB) -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/gifshot/0.3.2/gifshot.min.js"></script>
 
   <style>
@@ -55,24 +54,26 @@
   <!-- メインコンテナ -->
   <main class="w-full max-w-md px-4 pt-4 flex flex-col gap-4">
 
-    <!-- STEP 1: 動画の選択 -->
+    <!-- STEP 1: 動画の選択 (Safariで確実に反応する透明オーバーレイ) -->
     <section id="selectSection" class="w-full">
-      <input type="file" id="videoInput" accept="video/*" class="hidden">
-      
-      <div id="selectBtn" role="button" tabindex="0" class="w-full flex flex-col items-center justify-center p-8 border-2 border-dashed border-zinc-700 hover:border-blue-500 bg-zinc-900/60 hover:bg-zinc-800/60 rounded-3xl cursor-pointer transition-all active:scale-[0.98]">
-        <div class="w-16 h-16 rounded-2xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400 mb-3 shadow-lg shadow-blue-500/10">
+      <div class="relative w-full flex flex-col items-center justify-center p-8 border-2 border-dashed border-zinc-700 hover:border-blue-500 bg-zinc-900/60 rounded-3xl overflow-hidden active:scale-[0.98] transition-all">
+        <!-- 枠全体に広がる本物の透明なinput要素 (Safariで100%タップが反応) -->
+        <input type="file" id="videoInput" accept="video/*" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20">
+        
+        <div class="w-16 h-16 rounded-2xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400 mb-3 shadow-lg shadow-blue-500/10 pointer-events-none">
           <i data-lucide="film" class="w-8 h-8"></i>
         </div>
-        <p class="text-base font-semibold text-white mb-1">写真・動画を選択</p>
-        <p class="text-xs text-zinc-400 text-center">タップしてカメラロールから動画を選択</p>
-        <div class="mt-4 px-3 py-1 bg-zinc-800 border border-zinc-700 rounded-full text-[11px] text-zinc-300 flex items-center gap-1.5">
-          <i data-lucide="zap" class="w-3 h-3 text-amber-400"></i>
-          <span>ダウンロード待ち時間ゼロ</span>
+        <p id="selectTitle" class="text-base font-semibold text-white mb-1 pointer-events-none">写真・動画を選択</p>
+        <p id="selectDesc" class="text-xs text-zinc-400 text-center pointer-events-none">タップしてカメラロールから動画を選択</p>
+        
+        <div class="mt-4 px-3 py-1 bg-zinc-800 border border-zinc-700 rounded-full text-[11px] text-zinc-300 flex items-center gap-1.5 pointer-events-none">
+          <i data-lucide="smartphone" class="w-3 h-3 text-blue-400"></i>
+          <span>iPhoneの画面録画・動画に対応</span>
         </div>
       </div>
     </section>
 
-    <!-- STEP 2: 編集・変換設定 (選択後に表示) -->
+    <!-- STEP 2: 編集・変換設定 -->
     <div id="editorSection" class="hidden flex flex-col gap-4">
 
       <!-- 動画情報バッジ -->
@@ -112,7 +113,7 @@
       <!-- コントロールタブ -->
       <div class="flex flex-col gap-3">
 
-        <!-- 1. クロップ設定カード -->
+        <!-- 1. クロップ設定 -->
         <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-4">
           <div class="flex items-center justify-between mb-3">
             <div class="flex items-center gap-2">
