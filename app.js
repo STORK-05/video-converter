@@ -1,8 +1,6 @@
 lucide.createIcons();
 
 // --- 状態管理 ---
-let ffmpeg = null;
-let isFFmpegLoaded = false;
 let currentFile = null;
 let videoDuration = 0;
 let originalWidth = 0;
@@ -29,12 +27,6 @@ let convertedBlob = null;
 let convertedUrl = null;
 
 // --- DOM 要素 ---
-const wasmBadge = document.getElementById('wasmBadge');
-const wasmBadgeText = document.getElementById('wasmBadgeText');
-const loadingBanner = document.getElementById('loadingBanner');
-const bannerTitle = document.getElementById('bannerTitle');
-const bannerDesc = document.getElementById('bannerDesc');
-
 const videoInput = document.getElementById('videoInput');
 const selectBtn = document.getElementById('selectBtn');
 const selectSection = document.getElementById('selectSection');
@@ -80,7 +72,6 @@ const downloadBtn = document.getElementById('downloadBtn');
 const shareBtn = document.getElementById('shareBtn');
 const resetBtn = document.getElementById('resetBtn');
 
-// --- ユーティリティ ---
 function formatBytes(bytes, decimals = 1) {
   if (!+bytes) return '0 B';
   const k = 1024;
@@ -96,98 +87,7 @@ function formatTime(sec) {
   return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
 }
 
-// 進捗付きファイルダウンロード (WASM読込用)
-async function fetchWithProgress(url, onProgress) {
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-  
-  const contentLength = response.headers.get('content-length');
-  const total = contentLength ? parseInt(contentLength, 10) : 31000000; // 約31MB目安
-  let loaded = 0;
-
-  const reader = response.body.getReader();
-  const chunks = [];
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    loaded += value.length;
-    if (onProgress) {
-      onProgress(Math.min(100, Math.round((loaded / total) * 100)));
-    }
-  }
-
-  const allChunks = new Uint8Array(loaded);
-  let position = 0;
-  for (const chunk of chunks) {
-    allChunks.set(chunk, position);
-    position += chunk.length;
-  }
-
-  return allChunks;
-}
-
-// --- FFmpeg.wasm の初期化 (進捗バー表示付き) ---
-async function initFFmpeg() {
-  try {
-    const { FFmpeg } = FFmpegWASM;
-
-    ffmpeg = new FFmpeg();
-
-    ffmpeg.on('progress', ({ progress }) => {
-      let percent = Math.round(progress * 100);
-      if (percent > 100) percent = 100;
-      if (percent < 0) percent = 0;
-      progressBar.style.width = `${percent}%`;
-      progressPercent.textContent = `${percent}%`;
-    });
-
-    const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
-
-    // 1. JSファイルの取得
-    wasmBadgeText.textContent = 'エンジン準備中 (JS)';
-    const coreJsBytes = await fetchWithProgress(`${baseURL}/ffmpeg-core.js`, (pct) => {
-      wasmBadgeText.textContent = `JS読込 (${pct}%)`;
-    });
-    const coreJsBlob = new Blob([coreJsBytes], { type: 'text/javascript' });
-    const coreJsURL = URL.createObjectURL(coreJsBlob);
-
-    // 2. WASMファイル(約31MB)の取得
-    wasmBadgeText.textContent = 'エンジンDL中 (0%)';
-    const wasmBytes = await fetchWithProgress(`${baseURL}/ffmpeg-core.wasm`, (pct) => {
-      wasmBadgeText.textContent = `WASM読込 (${pct}%)`;
-      bannerTitle.textContent = `変換エンジンをダウンロード中... (${pct}%)`;
-    });
-    const wasmBlob = new Blob([wasmBytes], { type: 'application/wasm' });
-    const wasmURL = URL.createObjectURL(wasmBlob);
-
-    // 3. ロード実行
-    wasmBadgeText.textContent = '初期化中...';
-    await ffmpeg.load({
-      coreURL: coreJsURL,
-      wasmURL: wasmURL
-    });
-
-    isFFmpegLoaded = true;
-    wasmBadge.className = 'text-[11px] px-2.5 py-1 rounded-full bg-emerald-950 text-emerald-400 border border-emerald-800/80 flex items-center gap-1.5 font-medium';
-    wasmBadge.innerHTML = '<span class="w-2 h-2 rounded-full bg-emerald-400"></span><span>準備完了</span>';
-    
-    // バナーを非表示
-    loadingBanner.classList.add('hidden');
-  } catch (err) {
-    console.error('FFmpeg load failed:', err);
-    wasmBadge.className = 'text-[11px] px-2.5 py-1 rounded-full bg-rose-950 text-rose-400 border border-rose-800/80 flex items-center gap-1.5 font-medium';
-    wasmBadge.innerHTML = '<span class="w-2 h-2 rounded-full bg-rose-400"></span><span>読込失敗</span>';
-    bannerTitle.textContent = 'エンジンの読み込みに失敗しました';
-    bannerDesc.textContent = '電波の良い環境でページを再読み込みしてください。(エラー: ' + (err.message || '通信タイムアウト') + ')';
-  }
-}
-
-// 起動時にロード開始
-initFFmpeg();
-
-// --- iPhoneでの動画選択を確実に発火させる ---
+// --- 動画選択 ---
 selectBtn.addEventListener('click', () => {
   videoInput.click();
 });
@@ -201,11 +101,10 @@ videoInput.addEventListener('change', async (e) => {
   fileMetaSize.textContent = formatBytes(file.size);
 
   const fileUrl = URL.createObjectURL(file);
-  videoPreview.muted = true; // iOS Safariで自動再生/メタデータ読込に必須
+  videoPreview.muted = true;
   videoPreview.playsInline = true;
   videoPreview.src = fileUrl;
 
-  // メタデータロード待ち
   const onMetaLoaded = () => {
     originalWidth = videoPreview.videoWidth || 1920;
     originalHeight = videoPreview.videoHeight || 1080;
@@ -229,7 +128,6 @@ videoInput.addEventListener('change', async (e) => {
   };
 
   videoPreview.onloadedmetadata = onMetaLoaded;
-  // 万が一イベントが来ない場合のフォールバック
   setTimeout(() => {
     if (editorSection.classList.contains('hidden')) {
       onMetaLoaded();
@@ -406,7 +304,7 @@ cropPresetBtns.forEach(btn => {
   btn.addEventListener('click', () => applyCropPreset(btn.dataset.preset));
 });
 
-// クロップボックスのドラッグ移動
+// クロップ枠ドラッグ
 let isDragging = false;
 let dragStartX = 0;
 let dragStartY = 0;
@@ -447,7 +345,7 @@ formatBtns.forEach(btn => {
         : 'format-btn bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-medium py-2.5 rounded-xl flex flex-col items-center gap-1 transition-all';
     });
 
-    if (outputFormat === 'mp3') {
+    if (outputFormat === 'wav') {
       videoSettingsCard.classList.add('hidden');
     } else {
       videoSettingsCard.classList.remove('hidden');
@@ -472,148 +370,283 @@ resolutionSelect.addEventListener('change', (e) => {
   outputResolution = e.target.value;
 });
 
-// --- 変換実行 ---
+// --- ハードウェア高速変換 (Canvas + MediaRecorder) ---
 startConvertBtn.addEventListener('click', async () => {
-  if (!isFFmpegLoaded) {
-    alert('変換エンジン(WASM)の読み込み中です。右上のバッジが「準備完了」になるまでお待ちください。');
-    return;
-  }
   if (!currentFile) return;
 
   editorSection.classList.add('hidden');
   progressSection.classList.remove('hidden');
   progressBar.style.width = '0%';
   progressPercent.textContent = '0%';
-  progressStatusText.textContent = '動画ファイルを準備中...';
-
-  const { fetchFile } = FFmpegUtil;
-  const inputName = 'input_' + Date.now() + '.' + (currentFile.name.split('.').pop() || 'mp4');
-  const outputExt = outputFormat;
-  const outputName = 'output_' + Date.now() + '.' + outputExt;
+  progressStatusText.textContent = '変換を開始しています...';
 
   try {
-    await ffmpeg.writeFile(inputName, await fetchFile(currentFile));
-
-    progressStatusText.textContent = '変換コマンドを準備中...';
-
-    const args = [];
-
-    // 時間トリミング
-    if (trimSettings.start > 0) {
-      args.push('-ss', trimSettings.start.toString());
-    }
-    if (trimSettings.end < videoDuration) {
-      args.push('-to', trimSettings.end.toString());
-    }
-
-    args.push('-i', inputName);
-
-    const filters = [];
-
-    // クロップ処理（偶数ピクセル丸め）
-    if (cropSettings.enabled) {
-      const cw = Math.floor(cropSettings.width / 2) * 2;
-      const ch = Math.floor(cropSettings.height / 2) * 2;
-      const cx = Math.floor(cropSettings.x / 2) * 2;
-      const cy = Math.floor(cropSettings.y / 2) * 2;
-      filters.push(`crop=${cw}:${ch}:${cx}:${cy}`);
-    }
-
-    // 解像度スケール
-    if (outputResolution !== 'original' && outputFormat !== 'mp3') {
-      const targetSize = parseInt(outputResolution);
-      if (originalWidth >= originalHeight) {
-        filters.push(`scale=-2:${targetSize}`);
-      } else {
-        filters.push(`scale=${targetSize}:-2`);
-      }
-    }
-
-    if (outputFormat === 'mp4') {
-      if (filters.length > 0) {
-        args.push('-vf', filters.join(','));
-      }
-      let crf = '24';
-      if (outputQuality === 'high') crf = '18';
-      if (outputQuality === 'small') crf = '28';
-
-      args.push(
-        '-c:v', 'libx264',
-        '-crf', crf,
-        '-preset', 'ultrafast',
-        '-c:a', 'aac',
-        '-b:a', '128k',
-        '-movflags', '+faststart'
-      );
-    } else if (outputFormat === 'gif') {
-      const baseFilter = filters.length > 0 ? filters.join(',') + ',' : '';
-      const gifFilter = `${baseFilter}fps=15,scale=480:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse`;
-      args.push('-vf', gifFilter);
-    } else if (outputFormat === 'mp3') {
-      args.push('-vn', '-c:a', 'libmp3lame', '-q:a', '2');
-    } else if (outputFormat === 'webm') {
-      if (filters.length > 0) {
-        args.push('-vf', filters.join(','));
-      }
-      args.push('-c:v', 'libvpx-vp9', '-crf', '32', '-b:v', '0', '-c:a', 'libopus');
-    }
-
-    args.push(outputName);
-
-    progressStatusText.textContent = '変換中... (端末内で処理しています)';
-    console.log('FFmpeg args:', args);
-
-    await ffmpeg.exec(args);
-
-    const data = await ffmpeg.readFile(outputName);
-    let mimeType = 'video/mp4';
-    if (outputFormat === 'gif') mimeType = 'image/gif';
-    if (outputFormat === 'mp3') mimeType = 'audio/mp3';
-    if (outputFormat === 'webm') mimeType = 'video/webm';
-
-    convertedBlob = new Blob([data.buffer], { type: mimeType });
-    convertedUrl = URL.createObjectURL(convertedBlob);
-
-    progressSection.classList.add('hidden');
-    resultSection.classList.remove('hidden');
-
-    resSizeBefore.textContent = formatBytes(currentFile.size);
-    resSizeAfter.textContent = `${formatBytes(convertedBlob.size)} (${Math.round((1 - convertedBlob.size / currentFile.size) * 100)}% 削減)`;
-
-    resultVideo.classList.add('hidden');
-    resultImage.classList.add('hidden');
-    resultAudio.classList.add('hidden');
-
     if (outputFormat === 'gif') {
-      resultImage.src = convertedUrl;
-      resultImage.classList.remove('hidden');
-    } else if (outputFormat === 'mp3') {
-      resultAudio.src = convertedUrl;
-      resultAudio.classList.remove('hidden');
+      await convertToGIF();
+    } else if (outputFormat === 'wav') {
+      await convertToAudio();
     } else {
-      resultVideo.src = convertedUrl;
-      resultVideo.classList.remove('hidden');
+      await convertToVideo();
     }
-
-    downloadBtn.href = convertedUrl;
-    downloadBtn.download = `converted_${Date.now()}.${outputFormat}`;
-
-    await ffmpeg.deleteFile(inputName);
-    await ffmpeg.deleteFile(outputName);
-
-    lucide.createIcons();
   } catch (err) {
     console.error('Conversion failed:', err);
-    alert('変換処理中にエラーが発生しました。\n動画の長さや形式、端末の空きメモリをご確認ください。');
+    alert('変換中にエラーが発生しました: ' + (err.message || err));
     progressSection.classList.add('hidden');
     editorSection.classList.remove('hidden');
   }
 });
 
+// 1. 動画変換 (MP4 / WebM - MediaRecorder)
+async function convertToVideo() {
+  const hiddenVideo = document.createElement('video');
+  hiddenVideo.src = URL.createObjectURL(currentFile);
+  hiddenVideo.muted = false; // 音声を含めるため
+  hiddenVideo.playsInline = true;
+  await new Promise(r => hiddenVideo.onloadedmetadata = r);
+
+  // 切り抜き範囲と解像度の決定
+  let sx = 0, sy = 0, sw = originalWidth, sh = originalHeight;
+  if (cropSettings.enabled) {
+    sx = cropSettings.x;
+    sy = cropSettings.y;
+    sw = cropSettings.width;
+    sh = cropSettings.height;
+  }
+
+  let outW = sw;
+  let outH = sh;
+  if (outputResolution !== 'original') {
+    const target = parseInt(outputResolution);
+    if (sw >= sh) {
+      outW = Math.round(target * (sw / sh));
+      outH = target;
+    } else {
+      outW = target;
+      outH = Math.round(target * (sh / sw));
+    }
+  }
+  // 偶数ピクセル丸め
+  outW = Math.floor(outW / 2) * 2;
+  outH = Math.floor(outH / 2) * 2;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = outW;
+  canvas.height = outH;
+  const ctx = canvas.getContext('2d');
+
+  // ビットレート設定
+  let bitrate = 3000000; // 3 Mbps (標準)
+  if (outputQuality === 'high') bitrate = 6000000;
+  if (outputQuality === 'small') bitrate = 1200000;
+
+  // ストリームとエンコーダー準備
+  const canvasStream = canvas.captureStream(30);
+
+  // 音声トラックの合成 (Web Audio API)
+  try {
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const source = audioCtx.createMediaElementSource(hiddenVideo);
+    const dest = audioCtx.createMediaStreamDestination();
+    source.connect(dest);
+    // 元の動画に音声があればトラックを追加
+    dest.stream.getAudioTracks().forEach(t => canvasStream.addTrack(t));
+  } catch (e) {
+    console.warn('Audio stream attach skipped:', e);
+  }
+
+  // サポートされているMIMEタイプを検出
+  let mimeType = 'video/mp4';
+  if (!MediaRecorder.isTypeSupported('video/mp4')) {
+    mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9') ? 'video/webm;codecs=vp9' : 'video/webm';
+  }
+
+  const recorder = new MediaRecorder(canvasStream, {
+    mimeType: mimeType,
+    videoBitsPerSecond: bitrate
+  });
+
+  const chunks = [];
+  recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+
+  const startSec = trimSettings.start;
+  const endSec = trimSettings.end;
+  const totalDuration = endSec - startSec;
+
+  hiddenVideo.currentTime = startSec;
+  await new Promise(r => hiddenVideo.onseeked = r);
+
+  recorder.start(100);
+  await hiddenVideo.play();
+
+  // フレーム描画ループ
+  let isRunning = true;
+  function renderFrame() {
+    if (!isRunning) return;
+    ctx.drawImage(hiddenVideo, sx, sy, sw, sh, 0, 0, outW, outH);
+
+    const currentProgress = (hiddenVideo.currentTime - startSec) / totalDuration;
+    const pct = Math.min(100, Math.max(0, Math.round(currentProgress * 100)));
+    progressBar.style.width = `${pct}%`;
+    progressPercent.textContent = `${pct}%`;
+
+    if (hiddenVideo.currentTime >= endSec || hiddenVideo.ended) {
+      isRunning = false;
+      hiddenVideo.pause();
+      recorder.stop();
+    } else {
+      requestAnimationFrame(renderFrame);
+    }
+  }
+
+  renderFrame();
+
+  await new Promise(resolve => recorder.onstop = resolve);
+
+  const finalExt = mimeType.includes('mp4') ? 'mp4' : 'webm';
+  convertedBlob = new Blob(chunks, { type: mimeType });
+  finishConversion(finalExt);
+}
+
+// 2. GIF 変換
+async function convertToGIF() {
+  progressStatusText.textContent = 'GIFフレームを生成中...';
+  const startSec = trimSettings.start;
+  const duration = Math.min(10, trimSettings.end - startSec); // GIFは最大10秒
+
+  let sx = cropSettings.enabled ? cropSettings.x : 0;
+  let sy = cropSettings.enabled ? cropSettings.y : 0;
+  let sw = cropSettings.enabled ? cropSettings.width : originalWidth;
+  let sh = cropSettings.enabled ? cropSettings.height : originalHeight;
+
+  gifshot.createGIF({
+    video: [URL.createObjectURL(currentFile)],
+    offset: startSec,
+    duration: duration,
+    numFrames: Math.round(duration * 10), // 10 fps
+    frameDuration: 1,
+    sampleInterval: 10,
+    videoX: sx,
+    videoY: sy,
+    videoWidth: sw,
+    videoHeight: sh,
+    gifWidth: 400,
+    gifHeight: Math.round(400 * (sh / sw)),
+    progressCallback: (captureProgress) => {
+      const pct = Math.round(captureProgress * 100);
+      progressBar.style.width = `${pct}%`;
+      progressPercent.textContent = `${pct}%`;
+    }
+  }, (obj) => {
+    if (!obj.error) {
+      // base64からBlobへ変換
+      const byteCharacters = atob(obj.image.split(',')[1]);
+      const byteNumbers = new Array(byteCharacters.length);
+      for (let i = 0; i < byteCharacters.length; i++) {
+        byteNumbers[i] = byteCharacters.charCodeAt(i);
+      }
+      convertedBlob = new Blob([new Uint8Array(byteNumbers)], { type: 'image/gif' });
+      finishConversion('gif');
+    } else {
+      throw new Error(obj.error);
+    }
+  });
+}
+
+// 3. 音声抽出 (WAV)
+async function convertToAudio() {
+  progressStatusText.textContent = '音声を抽出しています...';
+  const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const response = await fetch(URL.createObjectURL(currentFile));
+  const arrayBuffer = await response.arrayBuffer();
+  const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+
+  const startSec = trimSettings.start;
+  const endSec = trimSettings.end;
+  const startSample = Math.floor(startSec * audioBuffer.sampleRate);
+  const endSample = Math.floor(endSec * audioBuffer.sampleRate);
+  const length = endSample - startSample;
+
+  const trimmed = audioCtx.createBuffer(audioBuffer.numberOfChannels, length, audioBuffer.sampleRate);
+  for (let ch = 0; ch < audioBuffer.numberOfChannels; ch++) {
+    trimmed.copyToChannel(audioBuffer.getChannelData(ch).subarray(startSample, endSample), ch, 0);
+  }
+
+  // WAVエンコード
+  convertedBlob = audioBufferToWavBlob(trimmed);
+  finishConversion('wav');
+}
+
+function audioBufferToWavBlob(buffer) {
+  const numOfChan = buffer.numberOfChannels;
+  const length = buffer.length * numOfChan * 2 + 44;
+  const out = new DataView(new ArrayBuffer(length));
+  let pos = 0;
+
+  function setUint16(data) { out.setUint16(pos, data, true); pos += 2; }
+  function setUint32(data) { out.setUint32(pos, data, true); pos += 4; }
+
+  // RIFF header
+  out.setUint32(0, 0x46464952, true); // "RIFF"
+  out.setUint32(4, length - 8, true);
+  out.setUint32(8, 0x45564157, true); // "WAVE"
+  out.setUint32(12, 0x20746d66, true); // "fmt "
+  setUint32(16);
+  setUint16(1); // PCM
+  setUint16(numOfChan);
+  setUint32(buffer.sampleRate);
+  setUint32(buffer.sampleRate * 2 * numOfChan);
+  setUint16(numOfChan * 2);
+  setUint16(16);
+  out.setUint32(pos, 0x61746164, true); pos += 4; // "data"
+  setUint32(length - pos - 4);
+
+  // Channels interleave
+  for (let i = 0; i < buffer.length; i++) {
+    for (let ch = 0; ch < numOfChan; ch++) {
+      let sample = Math.max(-1, Math.min(1, buffer.getChannelData(ch)[i]));
+      out.setInt16(pos, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
+      pos += 2;
+    }
+  }
+
+  return new Blob([out.buffer], { type: 'audio/wav' });
+}
+
+// 完了処理
+function finishConversion(ext) {
+  convertedUrl = URL.createObjectURL(convertedBlob);
+
+  progressSection.classList.add('hidden');
+  resultSection.classList.remove('hidden');
+
+  resSizeBefore.textContent = formatBytes(currentFile.size);
+  resSizeAfter.textContent = `${formatBytes(convertedBlob.size)} (${Math.round((1 - convertedBlob.size / currentFile.size) * 100)}% 削減)`;
+
+  resultVideo.classList.add('hidden');
+  resultImage.classList.add('hidden');
+  resultAudio.classList.add('hidden');
+
+  if (ext === 'gif') {
+    resultImage.src = convertedUrl;
+    resultImage.classList.remove('hidden');
+  } else if (ext === 'wav') {
+    resultAudio.src = convertedUrl;
+    resultAudio.classList.remove('hidden');
+  } else {
+    resultVideo.src = convertedUrl;
+    resultVideo.classList.remove('hidden');
+  }
+
+  downloadBtn.href = convertedUrl;
+  downloadBtn.download = `converted_${Date.now()}.${ext}`;
+
+  lucide.createIcons();
+}
+
 shareBtn.addEventListener('click', async () => {
   if (!convertedBlob) return;
-  const fileName = `converted_${Date.now()}.${outputFormat}`;
-  const file = new File([convertedBlob], fileName, { type: convertedBlob.type });
+  const ext = convertedBlob.type.includes('gif') ? 'gif' : (convertedBlob.type.includes('wav') ? 'wav' : 'mp4');
+  const file = new File([convertedBlob], `converted_${Date.now()}.${ext}`, { type: convertedBlob.type });
 
   if (navigator.canShare && navigator.canShare({ files: [file] })) {
     try {
@@ -623,9 +656,7 @@ shareBtn.addEventListener('click', async () => {
         text: 'ビデオコンバーターで変換した動画です'
       });
     } catch (err) {
-      if (err.name !== 'AbortError') {
-        console.error('Share failed:', err);
-      }
+      if (err.name !== 'AbortError') console.error('Share failed:', err);
     }
   } else {
     downloadBtn.click();
