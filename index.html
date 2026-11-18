@@ -291,9 +291,10 @@
           <i data-lucide="check" class="w-6 h-6"></i>
         </div>
         <h3 class="text-base font-semibold text-white mb-1">変換が完了しました！</h3>
-        <p class="text-xs text-zinc-400 mb-4">
+        <p class="text-xs text-zinc-400 mb-1">
           <span id="resSizeBefore" class="line-through text-zinc-500"></span> ➔ <span id="resSizeAfter" class="text-emerald-400 font-semibold"></span>
         </p>
+        <p id="resMetaInfo" class="text-[11px] text-zinc-400 font-mono mb-4 bg-zinc-800/80 px-2.5 py-1 rounded-lg border border-zinc-700/60"></p>
 
         <div id="resultPreviewContainer" class="w-full bg-black rounded-2xl overflow-hidden border border-zinc-800 mb-4 flex items-center justify-center">
           <video id="resultVideo" playsinline controls class="w-full max-h-[300px] object-contain hidden"></video>
@@ -301,16 +302,18 @@
           <audio id="resultAudio" controls class="w-full p-4 hidden"></audio>
         </div>
 
-        <div class="w-full flex flex-col gap-2">
-          <a id="downloadBtn" download="converted_video.mp4" class="w-full bg-emerald-600 hover:bg-emerald-500 active:scale-[0.98] text-white font-semibold py-3.5 rounded-2xl shadow-lg shadow-emerald-600/30 flex items-center justify-center gap-2 transition-all cursor-pointer">
-            <i data-lucide="download" class="w-5 h-5"></i>
-            <span>動画を保存 / ダウンロード</span>
-          </a>
-          <button type="button" id="shareBtn" class="w-full bg-zinc-800 hover:bg-zinc-700 active:scale-[0.98] text-white font-medium py-3 rounded-2xl flex items-center justify-center gap-2 transition-all">
-            <i data-lucide="share" class="w-4 h-4"></i>
-            <span>共有する (写真に保存 / LINE等)</span>
+        <div class="w-full flex flex-col gap-2.5">
+          <!-- メイン：iOSの写真アプリに直接保存するためのボタン -->
+          <button type="button" id="shareBtn" class="w-full bg-emerald-600 hover:bg-emerald-500 active:scale-[0.98] text-white font-semibold py-3.5 rounded-2xl shadow-lg shadow-emerald-600/30 flex items-center justify-center gap-2 transition-all">
+            <i data-lucide="image-down" class="w-5 h-5"></i>
+            <span>写真アプリに保存（「ビデオを保存」を選択）</span>
           </button>
-          <button type="button" id="resetBtn" class="w-full py-2 text-xs text-zinc-500 hover:text-zinc-300 transition-colors mt-2">
+          <!-- サブ：ファイルアプリへ直接ダウンロード -->
+          <a id="downloadBtn" download="video.mp4" class="w-full bg-zinc-800 hover:bg-zinc-700 active:scale-[0.98] text-zinc-200 font-medium py-3 rounded-2xl flex items-center justify-center gap-2 transition-all cursor-pointer text-xs">
+            <i data-lucide="folder-down" class="w-4 h-4"></i>
+            <span>「ファイル」に保存 / PCダウンロード</span>
+          </a>
+          <button type="button" id="resetBtn" class="w-full py-2 text-xs text-zinc-500 hover:text-zinc-300 transition-colors mt-1">
             続けて別の動画を変換する
           </button>
         </div>

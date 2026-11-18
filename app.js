@@ -24,7 +24,9 @@ let outputFormat = 'mp4';
 let outputQuality = 'medium';
 let outputResolution = 'original';
 let convertedBlob = null;
+let convertedFile = null;
 let convertedUrl = null;
+let originalCreationTimeMs = null;
 
 // --- DOM 要素 ---
 const videoInput = document.getElementById('videoInput');
@@ -72,12 +74,16 @@ const progressStatusText = document.getElementById('progressStatusText');
 
 const resSizeBefore = document.getElementById('resSizeBefore');
 const resSizeAfter = document.getElementById('resSizeAfter');
+const resMetaInfo = document.getElementById('resMetaInfo');
 const resultVideo = document.getElementById('resultVideo');
 const resultImage = document.getElementById('resultImage');
 const resultAudio = document.getElementById('resultAudio');
 const downloadBtn = document.getElementById('downloadBtn');
 const shareBtn = document.getElementById('shareBtn');
 const resetBtn = document.getElementById('resetBtn');
+
+// 1904-01-01 00:00:00 UTC と 1970-01-01 00:00:00 UTC の秒数差 (MP4/QuickTime規格)
+const MAC_EPOCH_OFFSET_SEC = 2082844800;
 
 function formatBytes(bytes, decimals = 1) {
   if (!+bytes) return '0 B';
@@ -94,6 +100,123 @@ function formatTime(sec) {
   return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
 }
 
+function formatDateJP(ms) {
+  const d = new Date(ms);
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  const hh = String(d.getHours()).padStart(2, '0');
+  const min = String(d.getMinutes()).padStart(2, '0');
+  return `${yyyy}/${mm}/${dd} ${hh}:${min}`;
+}
+
+// 元のファイル名（タイトル）を維持して拡張子のみ設定する
+function getPreservedFileName(originalName, newExt) {
+  if (!originalName) return `video.${newExt}`;
+  const lastDot = originalName.lastIndexOf('.');
+  const baseName = lastDot > 0 ? originalName.substring(0, lastDot) : originalName;
+  return `${baseName}.${newExt}`;
+}
+
+// バッファ内から mvhd の creation_time (1904年基準秒) を探して Unix ミリ秒で返す
+function findMvhdCreationTimeInBuffer(buffer) {
+  const bytes = new Uint8Array(buffer);
+  const view = new DataView(buffer);
+  const len = bytes.length;
+
+  // 'mvhd' (0x6d, 0x76, 0x68, 0x64) を検索
+  for (let i = 4; i < len - 24; i++) {
+    if (
+      bytes[i] === 0x6d &&
+      bytes[i + 1] === 0x76 &&
+      bytes[i + 2] === 0x68 &&
+      bytes[i + 3] === 0x64
+    ) {
+      const boxSize = view.getUint32(i - 4, false);
+      const version = bytes[i + 4];
+      if (boxSize >= 96 && boxSize <= 512 && (version === 0 || version === 1)) {
+        let macSec = 0;
+        if (version === 0) {
+          macSec = view.getUint32(i + 8, false);
+        } else {
+          const high = view.getUint32(i + 8, false);
+          const low = view.getUint32(i + 12, false);
+          macSec = high * 4294967296 + low;
+        }
+        // 1980年〜現在+1年以内の妥当なタイムスタンプか確認
+        if (macSec > MAC_EPOCH_OFFSET_SEC + 315532800) {
+          const unixMs = (macSec - MAC_EPOCH_OFFSET_SEC) * 1000;
+          if (unixMs <= Date.now() + 86400000 * 365) {
+            return unixMs;
+          }
+        }
+      }
+    }
+  }
+  return null;
+}
+
+// 元動画ファイルから本来の撮影日時を抽出する
+async function extractOriginalCreationDate(file) {
+  try {
+    const chunkSize = 8 * 1024 * 1024; // 先頭・末尾 8MB を検査
+    const headBuffer = await file.slice(0, Math.min(file.size, chunkSize)).arrayBuffer();
+    const headTime = findMvhdCreationTimeInBuffer(headBuffer);
+    if (headTime) return headTime;
+
+    if (file.size > chunkSize) {
+      const tailStart = Math.max(0, file.size - chunkSize);
+      const tailBuffer = await file.slice(tailStart, file.size).arrayBuffer();
+      const tailTime = findMvhdCreationTimeInBuffer(tailBuffer);
+      if (tailTime) return tailTime;
+    }
+  } catch (e) {
+    console.warn('Metadata date read skipped:', e);
+  }
+  return file.lastModified || Date.now();
+}
+
+// 変換後のMP4バイナリ内の mvhd / tkhd / mdhd の作成日時・更新日時を元の撮影日時に書き換える
+async function patchMp4CreationTime(mp4Blob, targetTimeMs) {
+  try {
+    const buffer = await mp4Blob.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    const view = new DataView(buffer);
+    const len = bytes.length;
+
+    const targetMacSec = Math.max(0, Math.floor(targetTimeMs / 1000) + MAC_EPOCH_OFFSET_SEC);
+
+    for (let i = 4; i < len - 24; i++) {
+      // 'mvhd' (6d 76 68 64), 'tkhd' (74 6b 68 64), 'mdhd' (6d 64 68 64)
+      const isMvhd = bytes[i] === 0x6d && bytes[i + 1] === 0x76 && bytes[i + 2] === 0x68 && bytes[i + 3] === 0x64;
+      const isTkhd = bytes[i] === 0x74 && bytes[i + 1] === 0x6b && bytes[i + 2] === 0x68 && bytes[i + 3] === 0x64;
+      const isMdhd = bytes[i] === 0x6d && bytes[i + 1] === 0x64 && bytes[i + 2] === 0x68 && bytes[i + 3] === 0x64;
+
+      if (isMvhd || isTkhd || isMdhd) {
+        const boxSize = view.getUint32(i - 4, false);
+        const version = bytes[i + 4];
+        // 各ヘッダBoxの妥当なサイズとバージョン(0 or 1)を確認
+        if (boxSize >= 24 && boxSize <= 512 && (version === 0 || version === 1)) {
+          if (version === 0) {
+            view.setUint32(i + 8, targetMacSec, false);  // creation_time
+            view.setUint32(i + 12, targetMacSec, false); // modification_time
+          } else {
+            view.setUint32(i + 8, 0, false);
+            view.setUint32(i + 12, targetMacSec, false); // creation_time (64bit)
+            view.setUint32(i + 16, 0, false);
+            view.setUint32(i + 20, targetMacSec, false); // modification_time (64bit)
+          }
+        }
+      }
+    }
+
+    return new Blob([buffer], { type: mp4Blob.type || 'video/mp4' });
+  } catch (e) {
+    console.warn('MP4 timestamp patch skipped:', e);
+    return mp4Blob;
+  }
+}
+
 // --- 動画選択 ---
 videoInput.addEventListener('change', async (e) => {
   const file = e.target.files && e.target.files[0];
@@ -104,7 +227,8 @@ videoInput.addEventListener('change', async (e) => {
 
   try {
     currentFile = file;
-    fileMetaName.textContent = file.name || 'video';
+    originalCreationTimeMs = await extractOriginalCreationDate(file);
+    fileMetaName.textContent = `${file.name || 'video'} (${formatDateJP(originalCreationTimeMs)})`;
     fileMetaSize.textContent = formatBytes(file.size);
 
     const fileUrl = URL.createObjectURL(file);
@@ -579,7 +703,7 @@ async function convertToVideo() {
 
   const finalExt = mimeType.includes('mp4') ? 'mp4' : 'webm';
   convertedBlob = new Blob(chunks, { type: mimeType });
-  finishConversion(finalExt);
+  await finishConversion(finalExt);
 }
 
 // 2. GIF 変換
@@ -646,7 +770,7 @@ async function convertToAudio() {
   }
 
   convertedBlob = audioBufferToWavBlob(trimmed);
-  finishConversion('wav');
+  await finishConversion('wav');
 }
 
 function audioBufferToWavBlob(buffer) {
@@ -683,14 +807,32 @@ function audioBufferToWavBlob(buffer) {
   return new Blob([out.buffer], { type: 'audio/wav' });
 }
 
-function finishConversion(ext) {
-  convertedUrl = URL.createObjectURL(convertedBlob);
+async function finishConversion(ext) {
+  const targetDateMs = originalCreationTimeMs || (currentFile && currentFile.lastModified) || Date.now();
+  const finalFileName = getPreservedFileName(currentFile ? currentFile.name : 'video', ext);
+
+  // MP4の場合はバイナリ内部のmvhd/tkhd/mdhd作成日時を元の撮影日時に書き換える（Googleフォト・写真アプリの撮影日維持）
+  if (ext === 'mp4') {
+    progressStatusText.textContent = '元の撮影日時・タイトルを書き込み中...';
+    convertedBlob = await patchMp4CreationTime(convertedBlob, targetDateMs);
+  }
+
+  // 元のタイトル・元の更新日時(lastModified)を持ったFileオブジェクトを生成
+  convertedFile = new File([convertedBlob], finalFileName, {
+    type: convertedBlob.type,
+    lastModified: targetDateMs
+  });
+
+  convertedUrl = URL.createObjectURL(convertedFile);
 
   progressSection.classList.add('hidden');
   resultSection.classList.remove('hidden');
 
   resSizeBefore.textContent = formatBytes(currentFile.size);
   resSizeAfter.textContent = `${formatBytes(convertedBlob.size)} (${Math.round((1 - convertedBlob.size / currentFile.size) * 100)}% 削減)`;
+  if (resMetaInfo) {
+    resMetaInfo.textContent = `📄 ${finalFileName} ｜ 📅 ${formatDateJP(targetDateMs)}`;
+  }
 
   resultVideo.classList.add('hidden');
   resultImage.classList.add('hidden');
@@ -708,22 +850,19 @@ function finishConversion(ext) {
   }
 
   downloadBtn.href = convertedUrl;
-  downloadBtn.download = `converted_${Date.now()}.${ext}`;
+  downloadBtn.download = finalFileName;
 
   lucide.createIcons();
 }
 
 shareBtn.addEventListener('click', async () => {
-  if (!convertedBlob) return;
-  const ext = convertedBlob.type.includes('gif') ? 'gif' : (convertedBlob.type.includes('wav') ? 'wav' : 'mp4');
-  const file = new File([convertedBlob], `converted_${Date.now()}.${ext}`, { type: convertedBlob.type });
+  if (!convertedFile) return;
 
-  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+  // iOS Safariで「ビデオを保存」（写真アプリへ直接保存）を確実に出すため、titleやtextを含めずfilesのみを渡す
+  if (navigator.canShare && navigator.canShare({ files: [convertedFile] })) {
     try {
       await navigator.share({
-        files: [file],
-        title: '変換済み動画',
-        text: 'ビデオコンバーターで切り取った動画です'
+        files: [convertedFile]
       });
     } catch (err) {
       if (err.name !== 'AbortError') console.error('Share failed:', err);
