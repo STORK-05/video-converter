@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>Video Converter - ビデオコンバーター</title>
+  
+  <!-- PWA & iOS Safari 設定 -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="コンバーター">
+  <link rel="apple-touch-icon" href="icon.png">
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#09090b">
+  
+  <!-- Tailwind CSS & Lucide Icons -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  
+  <!-- FFmpeg.wasm (UMD) -->
+  <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
+  <script src="https://unpkg.com/@ffmpeg/util@0.12.1/dist/umd/index.js"></script>
+
+  <style>
+    /* iOS風のUIとスクロール制御 */
+    body {
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+      background-color: #09090b;
+      color: #f4f4f5;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    .ios-blur {
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+    }
+    .crop-handle {
+      position: absolute;
+      width: 22px;
+      height: 22px;
+      background: #3b82f6;
+      border: 3px solid white;
+      border-radius: 50%;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.5);
+      touch-action: none;
+    }
+    input[type=range] {
+      accent-color: #3b82f6;
+    }
+  </style>
+</head>
+<body class="min-h-screen pb-12 flex flex-col items-center">
+
+  <!-- ヘッダー (iOS Navigation Bar風) -->
+  <header class="w-full max-w-md sticky top-0 z-40 bg-zinc-900/80 ios-blur border-b border-zinc-800 px-4 py-3 flex items-center justify-between">
+    <div class="flex items-center gap-2">
+      <div class="w-8 h-8 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center shadow-lg shadow-blue-500/20">
+        <i data-lucide="video" class="w-4 h-4 text-white"></i>
+      </div>
+      <h1 class="text-base font-semibold tracking-tight text-white">ビデオコンバーター</h1>
+    </div>
+    <div class="flex items-center gap-2">
+      <span id="wasmBadge" class="text-[11px] px-2 py-0.5 rounded-full bg-zinc-800 text-zinc-400 border border-zinc-700 flex items-center gap-1">
+        <span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
+        準備中
+      </span>
+    </div>
+  </header>
+
+  <!-- メインコンテナ -->
+  <main class="w-full max-w-md px-4 pt-4 flex flex-col gap-4">
+
+    <!-- STEP 1: 動画の選択 (未選択時) -->
+    <section id="selectSection" class="w-full">
+      <label for="videoInput" class="w-full flex flex-col items-center justify-center p-8 border-2 border-dashed border-zinc-700 hover:border-blue-500 bg-zinc-900/50 hover:bg-zinc-800/50 rounded-3xl cursor-pointer transition-all active:scale-[0.98]">
+        <div class="w-16 h-16 rounded-2xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400 mb-3">
+          <i data-lucide="film" class="w-8 h-8"></i>
+        </div>
+        <p class="text-base font-semibold text-white mb-1">動画を選択</p>
+        <p class="text-xs text-zinc-400 text-center">写真・カメラロールまたはファイルから選択</p>
+        <input type="file" id="videoInput" accept="video/*" class="hidden">
+      </label>
+    </section>
+
+    <!-- STEP 2: 編集・変換設定 (選択後に表示) -->
+    <div id="editorSection" class="hidden flex flex-col gap-4">
+
+      <!-- 動画情報バッジ -->
+      <div class="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-3 flex items-center justify-between text-xs text-zinc-400">
+        <div class="flex items-center gap-2 overflow-hidden">
+          <i data-lucide="file-video" class="w-4 h-4 text-blue-400 shrink-0"></i>
+          <span id="fileMetaName" class="truncate font-medium text-zinc-200">video.mp4</span>
+        </div>
+        <div class="flex items-center gap-3 shrink-0">
+          <span id="fileMetaRes" class="bg-zinc-800 px-2 py-0.5 rounded text-[11px]">-</span>
+          <span id="fileMetaSize" class="bg-zinc-800 px-2 py-0.5 rounded text-[11px]">-</span>
+        </div>
+      </div>
+
+      <!-- プレビュー＆クロップ領域 -->
+      <div class="relative bg-black rounded-2xl overflow-hidden border border-zinc-800 shadow-2xl flex items-center justify-center" style="min-height: 240px; max-height: 420px;">
+        <video id="videoPreview" playsinline controls class="w-full h-auto max-h-[420px] object-contain block"></video>
+
+        <!-- クロップ枠オーバーレイ (クロップ有効時) -->
+        <div id="cropContainer" class="absolute inset-0 pointer-events-none hidden">
+          <div id="cropBox" class="absolute border-2 border-blue-500 bg-blue-500/10 pointer-events-auto cursor-move shadow-2xl">
+            <!-- 四隅ハンドル -->
+            <div id="handle-tl" class="crop-handle -top-3 -left-3 cursor-nwse-resize"></div>
+            <div id="handle-tr" class="crop-handle -top-3 -right-3 cursor-nesw-resize"></div>
+            <div id="handle-bl" class="crop-handle -bottom-3 -left-3 cursor-nesw-resize"></div>
+            <div id="handle-br" class="crop-handle -bottom-3 -right-3 cursor-nwse-resize"></div>
+            <!-- ガイドグリッド（三分割線） -->
+            <div class="w-full h-full grid grid-cols-3 grid-rows-3 pointer-events-none opacity-40">
+              <div class="border-r border-b border-blue-400 border-dashed"></div>
+              <div class="border-r border-b border-blue-400 border-dashed"></div>
+              <div class="border-b border-blue-400 border-dashed"></div>
+              <div class="border-r border-b border-blue-400 border-dashed"></div>
+              <div class="border-r border-b border-blue-400 border-dashed"></div>
+              <div class="border-b border-blue-400 border-dashed"></div>
+              <div class="border-r border-blue-400 border-dashed"></div>
+              <div class="border-r border-blue-400 border-dashed"></div>
+              <div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- コントロールタブ (アコーディオン/カード式) -->
+      <div class="flex flex-col gap-3">
+
+        <!-- 1. クロップ設定カード -->
+        <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-4">
+          <div class="flex items-center justify-between mb-3">
+            <div class="flex items-center gap-2">
+              <i data-lucide="crop" class="w-4 h-4 text-blue-400"></i>
+              <span class="text-sm font-semibold text-white">画面サイズの切り抜き (クロップ)</span>
+            </div>
+            <span id="cropStatusText" class="text-xs text-zinc-400">なし</span>
+          </div>
+
+          <!-- クロッププリセットボタン群 -->
+          <div class="grid grid-cols-3 gap-2 text-xs">
+            <button type="button" class="crop-preset-btn active bg-blue-600 text-white font-medium py-2 rounded-xl transition-all" data-preset="none">
+              全体 (なし)
+            </button>
+            <button type="button" class="crop-preset-btn bg-zinc-800 hover:bg-zinc-700 text-zinc-300 py-2 rounded-xl transition-all" data-preset="iphone-bar">
+              📱 画面録画カット
+            </button>
+            <button type="button" class="crop-preset-btn bg-zinc-800 hover:bg-zinc-700 text-zinc-300 py-2 rounded-xl transition-all" data-preset="9-16">
+              9:16 (縦動画)
+            </button>
+            <button type="button" class="crop-preset-btn bg-zinc-800 hover:bg-zinc-700 text-zinc-300 py-2 rounded-xl transition-all" data-preset="16-9">
+              16:9 (横動画)
+            </button>
+            <button type="button" class="crop-preset-btn bg-zinc-800 hover:bg-zinc-700 text-zinc-300 py-2 rounded-xl transition-all" data-preset="1-1">
+              1:1 (正方形)
+            </button>
+            <button type="button" class="crop-preset-btn bg-zinc-800 hover:bg-zinc-700 text-zinc-300 py-2 rounded-xl transition-all" data-preset="custom">
+              🖐 自由調整
+            </button>
+          </div>
+          <p class="text-[11px] text-zinc-400 mt-2">
+            ※「画面録画カット」は上部ステータスバーと下部ホームバーを自動で除去します。
+          </p>
+        </div>
+
+        <!-- 2. 時間トリミング (カット) -->
+        <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-4">
+          <div class="flex items-center justify-between mb-3">
+            <div class="flex items-center gap-2">
+              <i data-lucide="scissors" class="w-4 h-4 text-emerald-400"></i>
+              <span class="text-sm font-semibold text-white">時間のトリミング</span>
+            </div>
+            <span id="durationRangeText" class="text-xs text-zinc-400 font-mono">00:00 - 00:00</span>
+          </div>
+
+          <div class="flex flex-col gap-3">
+            <!-- 開始位置 -->
+            <div class="flex items-center justify-between gap-3 text-xs">
+              <span class="w-12 text-zinc-400">開始</span>
+              <input type="range" id="trimStartRange" min="0" max="100" step="0.1" value="0" class="flex-1 h-2 bg-zinc-800 rounded-lg cursor-pointer">
+              <span id="trimStartVal" class="w-12 text-right font-mono text-zinc-300">00:00</span>
+              <button type="button" id="setStartCurrentBtn" class="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-2 py-1 rounded-lg text-[11px]">現在位置</button>
+            </div>
+            <!-- 終了位置 -->
+            <div class="flex items-center justify-between gap-3 text-xs">
+              <span class="w-12 text-zinc-400">終了</span>
+              <input type="range" id="trimEndRange" min="0" max="100" step="0.1" value="100" class="flex-1 h-2 bg-zinc-800 rounded-lg cursor-pointer">
+              <span id="trimEndVal" class="w-12 text-right font-mono text-zinc-300">00:00</span>
+              <button type="button" id="setEndCurrentBtn" class="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-2 py-1 rounded-lg text-[11px]">現在位置</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 3. 出力フォーマット選択 -->
+        <div class="bg-zinc-900 border border-zinc-800 rounded-2xl p-4">
+          <div class="flex items-center gap-2 mb-3">
+            <i data-lucide="file-output" class="w-4 h-4 text-amber-400"></i>
+            <span class="text-sm font-semibold text-white">出力フォーマット</span>
+          </div>
+          <div class="grid grid-cols-4 gap-2 text-xs">
+            <button type="button" class="format-btn active bg-blue-600 text-white font-medium py-2.5 rounded-xl flex flex-col items-center gap-1 transition-all" data-format="mp4">
+              <i data-lucide="video" class="w-4 h-4"></i>
+              MP4
+            </button>
+            <button type="button" class="format-btn bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-medium py-2.5 rounded-xl flex flex-col items-center gap-1 transition-all" data-format="gif">
+              <i data-lucide="image" class="w-4 h-4"></i>
+              GIF
+            </button>
+            <button type="button" class="format-btn bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-medium py-2.5 rounded-xl flex flex-col items-center gap-1 transition-all" data-format="mp3">
+              <i data-lucide="music" class="w-4 h-4"></i>
+              MP3(音声)
+            </button>
+            <button type="button" class="format-btn bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-medium py-2.5 rounded-xl flex flex-col items-center gap-1 transition-all" data-format="webm">
+              <i data-lucide="globe" class="w-4 h-4"></i>
+              WebM
+            </button>
+          </div>
+        </div>
+
+        <!-- 4. 圧縮・解像度設定 (動画形式のときのみ) -->
+        <div id="videoSettingsCard" class="bg-zinc-900 border border-zinc-800 rounded-2xl p-4">
+          <div class="flex items-center gap-2 mb-3">
+            <i data-lucide="sliders" class="w-4 h-4 text-purple-400"></i>
+            <span class="text-sm font-semibold text-white">画質・圧縮</span>
+          </div>
+          
+          <!-- 画質プリセット -->
+          <div class="flex items-center justify-between text-xs mb-3">
+            <span class="text-zinc-400">圧縮レベル</span>
+            <div class="flex gap-1 bg-zinc-800 p-1 rounded-xl">
+              <button type="button" class="quality-btn active px-3 py-1 rounded-lg text-white font-medium bg-blue-600 transition-all" data-quality="medium">標準</button>
+              <button type="button" class="quality-btn px-3 py-1 rounded-lg text-zinc-400 transition-all" data-quality="high">高画質</button>
+              <button type="button" class="quality-btn px-3 py-1 rounded-lg text-zinc-400 transition-all" data-quality="small">高圧縮(軽量)</button>
+            </div>
+          </div>
+
+          <!-- 解像度変更 -->
+          <div class="flex items-center justify-between text-xs">
+            <span class="text-zinc-400">最大解像度</span>
+            <select id="resolutionSelect" class="bg-zinc-800 text-zinc-200 border border-zinc-700 rounded-xl px-3 py-1.5 focus:outline-none focus:border-blue-500">
+              <option value="original" selected>元の解像度を維持</option>
+              <option value="1080">1080p (FHD)</option>
+              <option value="720">720p (HD - おすすめ)</option>
+              <option value="480">480p (軽量・高速)</option>
+            </select>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- 変換実行ボタン -->
+      <button type="button" id="startConvertBtn" class="w-full bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white font-semibold py-3.5 rounded-2xl shadow-lg shadow-blue-600/30 flex items-center justify-center gap-2 transition-all">
+        <i data-lucide="zap" class="w-5 h-5 fill-current"></i>
+        <span>変換を開始する</span>
+      </button>
+
+      <!-- 別の動画を選択 -->
+      <button type="button" id="reselectBtn" class="w-full py-2 text-xs text-zinc-500 hover:text-zinc-300 transition-colors">
+        別の動画を選択する
+      </button>
+
+    </div>
+
+    <!-- STEP 3: 変換中・進捗表示モーダル風 -->
+    <div id="progressSection" class="hidden bg-zinc-900 border border-zinc-800 rounded-3xl p-6 flex flex-col items-center text-center shadow-2xl">
+      <div class="w-14 h-14 rounded-2xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400 mb-4 animate-spin">
+        <i data-lucide="loader-2" class="w-7 h-7"></i>
+      </div>
+      <h3 class="text-base font-semibold text-white mb-1">動画を変換中...</h3>
+      <p id="progressStatusText" class="text-xs text-zinc-400 mb-4">フレームを処理しています</p>
+      
+      <!-- プログレスバー -->
+      <div class="w-full bg-zinc-800 rounded-full h-3 overflow-hidden mb-2">
+        <div id="progressBar" class="bg-gradient-to-r from-blue-600 to-indigo-500 h-full w-0 rounded-full transition-all duration-300"></div>
+      </div>
+      <span id="progressPercent" class="text-xs font-mono text-zinc-400">0%</span>
+    </div>
+
+    <!-- STEP 4: 完了画面 -->
+    <div id="resultSection" class="hidden flex flex-col gap-4">
+      <div class="bg-zinc-900 border border-zinc-800 rounded-3xl p-5 flex flex-col items-center">
+        <div class="w-12 h-12 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 mb-3">
+          <i data-lucide="check" class="w-6 h-6"></i>
+        </div>
+        <h3 class="text-base font-semibold text-white mb-1">変換が完了しました！</h3>
+        <p class="text-xs text-zinc-400 mb-4">
+          ファイルサイズ: <span id="resSizeBefore" class="line-through text-zinc-500"></span> ➔ <span id="resSizeAfter" class="text-emerald-400 font-semibold"></span>
+        </p>
+
+        <!-- 変換後プレビュー -->
+        <div id="resultPreviewContainer" class="w-full bg-black rounded-2xl overflow-hidden border border-zinc-800 mb-4 flex items-center justify-center">
+          <video id="resultVideo" playsinline controls class="w-full max-h-[300px] object-contain hidden"></video>
+          <img id="resultImage" class="w-full max-h-[300px] object-contain hidden" alt="Converted GIF">
+          <audio id="resultAudio" controls class="w-full p-4 hidden"></audio>
+        </div>
+
+        <!-- アクションボタン -->
+        <div class="w-full flex flex-col gap-2">
+          <a id="downloadBtn" download="converted_video.mp4" class="w-full bg-emerald-600 hover:bg-emerald-500 active:scale-[0.98] text-white font-semibold py-3.5 rounded-2xl shadow-lg shadow-emerald-600/30 flex items-center justify-center gap-2 transition-all cursor-pointer">
+            <i data-lucide="download" class="w-5 h-5"></i>
+            <span>動画を保存 / ダウンロード</span>
+          </a>
+          <button type="button" id="shareBtn" class="w-full bg-zinc-800 hover:bg-zinc-700 active:scale-[0.98] text-white font-medium py-3 rounded-2xl flex items-center justify-center gap-2 transition-all">
+            <i data-lucide="share" class="w-4 h-4"></i>
+            <span>共有する (AirDrop / LINE等)</span>
+          </button>
+          <button type="button" id="resetBtn" class="w-full py-2 text-xs text-zinc-500 hover:text-zinc-300 transition-colors mt-2">
+            続けて別の動画を変換する
+          </button>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- アプリケーションロジック -->
+  <script src="app.js"></script>
+</body>
+</html>

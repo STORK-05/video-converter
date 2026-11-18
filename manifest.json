@@ -1,0 +1,21 @@
+{
+  "name": "ビデオコンバーター",
+  "short_name": "コンバーター",
+  "description": "スマホ内で完結する動画変換・クロップ・圧縮ツール",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#09090b",
+  "theme_color": "#09090b",
+  "icons": [
+    {
+      "src": "icon.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "icon.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
