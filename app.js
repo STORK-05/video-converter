@@ -40,6 +40,7 @@ const fileMetaRes = document.getElementById('fileMetaRes');
 const fileMetaSize = document.getElementById('fileMetaSize');
 const videoPreview = document.getElementById('videoPreview');
 
+const videoStage = document.getElementById('videoStage');
 const cropContainer = document.getElementById('cropContainer');
 const cropBox = document.getElementById('cropBox');
 const cropStatusText = document.getElementById('cropStatusText');
@@ -213,41 +214,24 @@ setEndCurrentBtn.addEventListener('click', () => {
 });
 
 // --- クロップ（画面切り抜き） ---
-function getDisplayedVideoRect() {
-  const containerRect = videoPreview.getBoundingClientRect();
-  const videoRatio = (originalWidth || 16) / (originalHeight || 9);
-  const containerRatio = containerRect.width / (containerRect.height || 1);
-
-  let renderWidth, renderHeight, offsetX, offsetY;
-
-  if (videoRatio > containerRatio) {
-    renderWidth = containerRect.width;
-    renderHeight = containerRect.width / videoRatio;
-    offsetX = 0;
-    offsetY = (containerRect.height - renderHeight) / 2;
-  } else {
-    renderHeight = containerRect.height;
-    renderWidth = containerRect.height * videoRatio;
-    offsetX = (containerRect.width - renderWidth) / 2;
-    offsetY = 0;
-  }
-
+function getStageScale() {
+  const stageW = videoStage.clientWidth || 300;
+  const stageH = videoStage.clientHeight || 200;
   return {
-    left: offsetX,
-    top: offsetY,
-    width: renderWidth,
-    height: renderHeight,
-    scaleX: originalWidth / (renderWidth || 1),
-    scaleY: originalHeight / (renderHeight || 1)
+    scaleX: originalWidth / stageW,
+    scaleY: originalHeight / stageH,
+    stageW,
+    stageH
   };
 }
 
 function updateCropBoxUI(pxX, pxY, pxW, pxH) {
-  const vRect = getDisplayedVideoRect();
-  const uiLeft = vRect.left + (pxX / vRect.scaleX);
-  const uiTop = vRect.top + (pxY / vRect.scaleY);
-  const uiWidth = pxW / vRect.scaleX;
-  const uiHeight = pxH / vRect.scaleY;
+  const { scaleX, scaleY } = getStageScale();
+
+  const uiLeft = pxX / scaleX;
+  const uiTop = pxY / scaleY;
+  const uiWidth = pxW / scaleX;
+  const uiHeight = pxH / scaleY;
 
   cropBox.style.left = `${uiLeft}px`;
   cropBox.style.top = `${uiTop}px`;
@@ -277,7 +261,7 @@ function applyCropPreset(preset) {
     cropSettings.enabled = false;
     cropContainer.classList.add('hidden');
     cropAlignControls.classList.add('hidden');
-    cropStatusText.textContent = 'なし (全体)';
+    cropStatusText.textContent = '全体 (なし)';
     return;
   }
 
@@ -315,8 +299,8 @@ function applyCropPreset(preset) {
     targetX = Math.round((originalWidth - side) / 2);
     targetY = Math.round((originalHeight - side) / 2);
   } else if (preset === 'custom') {
-    targetW = Math.round(originalWidth * 0.8);
-    targetH = Math.round(originalHeight * 0.8);
+    targetW = Math.round(originalWidth * 0.85);
+    targetH = Math.round(originalHeight * 0.85);
     targetX = Math.round((originalWidth - targetW) / 2);
     targetY = Math.round((originalHeight - targetH) / 2);
   }
@@ -364,9 +348,9 @@ function handleDragStart(clientX, clientY) {
 
 function handleDragMove(clientX, clientY) {
   if (!isDragging) return;
-  const vRect = getDisplayedVideoRect();
-  const deltaX = (clientX - touchStartX) * vRect.scaleX;
-  const deltaY = (clientY - touchStartY) * vRect.scaleY;
+  const { scaleX, scaleY } = getStageScale();
+  const deltaX = (clientX - touchStartX) * scaleX;
+  const deltaY = (clientY - touchStartY) * scaleY;
 
   let newX = Math.max(0, Math.min(originalWidth - cropSettings.width, initialCropX + deltaX));
   let newY = Math.max(0, Math.min(originalHeight - cropSettings.height, initialCropY + deltaY));
