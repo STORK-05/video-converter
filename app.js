@@ -28,7 +28,8 @@ let convertedUrl = null;
 
 // --- DOM 要素 ---
 const videoInput = document.getElementById('videoInput');
-const selectBtn = document.getElementById('selectBtn');
+const selectTitle = document.getElementById('selectTitle');
+const selectDesc = document.getElementById('selectDesc');
 const selectSection = document.getElementById('selectSection');
 const editorSection = document.getElementById('editorSection');
 const progressSection = document.getElementById('progressSection');
@@ -43,6 +44,10 @@ const cropContainer = document.getElementById('cropContainer');
 const cropBox = document.getElementById('cropBox');
 const cropStatusText = document.getElementById('cropStatusText');
 const cropPresetBtns = document.querySelectorAll('.crop-preset-btn');
+const cropAlignControls = document.getElementById('cropAlignControls');
+const alignTopBtn = document.getElementById('alignTopBtn');
+const alignCenterBtn = document.getElementById('alignCenterBtn');
+const alignBottomBtn = document.getElementById('alignBottomBtn');
 
 const trimStartRange = document.getElementById('trimStartRange');
 const trimEndRange = document.getElementById('trimEndRange');
@@ -58,6 +63,7 @@ const resolutionSelect = document.getElementById('resolutionSelect');
 const videoSettingsCard = document.getElementById('videoSettingsCard');
 
 const startConvertBtn = document.getElementById('startConvertBtn');
+const cancelConvertBtn = document.getElementById('cancelConvertBtn');
 const reselectBtn = document.getElementById('reselectBtn');
 const progressBar = document.getElementById('progressBar');
 const progressPercent = document.getElementById('progressPercent');
@@ -88,62 +94,63 @@ function formatTime(sec) {
 }
 
 // --- 動画選択 ---
-const selectTitle = document.getElementById('selectTitle');
-const selectDesc = document.getElementById('selectDesc');
-
 videoInput.addEventListener('change', async (e) => {
   const file = e.target.files && e.target.files[0];
   if (!file) return;
 
   if (selectTitle) selectTitle.textContent = '動画を読み込み中...';
-  if (selectDesc) selectDesc.textContent = 'しばらくお待ちください';
+  if (selectDesc) selectDesc.textContent = `${file.name || '動画'} (${formatBytes(file.size)})`;
 
-  currentFile = file;
-  fileMetaName.textContent = file.name || 'video';
-  fileMetaSize.textContent = formatBytes(file.size);
+  try {
+    currentFile = file;
+    fileMetaName.textContent = file.name || 'video';
+    fileMetaSize.textContent = formatBytes(file.size);
 
-  const fileUrl = URL.createObjectURL(file);
-  videoPreview.muted = true;
-  videoPreview.playsInline = true;
-  videoPreview.src = fileUrl;
-  videoPreview.load();
+    const fileUrl = URL.createObjectURL(file);
+    videoPreview.muted = true;
+    videoPreview.playsInline = true;
+    videoPreview.setAttribute('playsinline', '');
+    videoPreview.setAttribute('webkit-playsinline', '');
+    videoPreview.src = fileUrl;
 
-  let hasLoaded = false;
-  const onMetaLoaded = () => {
-    if (hasLoaded) return;
-    hasLoaded = true;
+    let hasLoaded = false;
+    const onMetaLoaded = () => {
+      if (hasLoaded) return;
+      hasLoaded = true;
 
-    originalWidth = videoPreview.videoWidth || 1920;
-    originalHeight = videoPreview.videoHeight || 1080;
-    videoDuration = videoPreview.duration || 10;
+      originalWidth = videoPreview.videoWidth || 1920;
+      originalHeight = videoPreview.videoHeight || 1080;
+      videoDuration = videoPreview.duration || 10;
 
-    fileMetaRes.textContent = `${originalWidth}×${originalHeight}`;
+      fileMetaRes.textContent = `${originalWidth}×${originalHeight}`;
 
-    trimSettings.start = 0;
-    trimSettings.end = videoDuration;
-    trimStartRange.max = videoDuration;
-    trimStartRange.value = 0;
-    trimEndRange.max = videoDuration;
-    trimEndRange.value = videoDuration;
+      trimSettings.start = 0;
+      trimSettings.end = videoDuration;
+      trimStartRange.max = videoDuration;
+      trimStartRange.value = 0;
+      trimEndRange.max = videoDuration;
+      trimEndRange.value = videoDuration;
 
-    updateTrimLabels();
-    applyCropPreset('none');
+      updateTrimLabels();
+      applyCropPreset('none');
 
-    selectSection.classList.add('hidden');
-    editorSection.classList.remove('hidden');
-    lucide.createIcons();
-  };
+      selectSection.classList.add('hidden');
+      editorSection.classList.remove('hidden');
+      lucide.createIcons();
+    };
 
-  videoPreview.onloadedmetadata = onMetaLoaded;
-  videoPreview.onloadeddata = onMetaLoaded;
-  videoPreview.oncanplay = onMetaLoaded;
+    videoPreview.onloadedmetadata = onMetaLoaded;
+    videoPreview.onloadeddata = onMetaLoaded;
+    videoPreview.oncanplay = onMetaLoaded;
 
-  // 万が一のタイムアウトフォールバック (0.8秒)
-  setTimeout(() => {
-    if (!hasLoaded) {
-      onMetaLoaded();
-    }
-  }, 800);
+    setTimeout(() => {
+      if (!hasLoaded) onMetaLoaded();
+    }, 1200);
+
+  } catch (err) {
+    console.error('File load error:', err);
+    alert('動画の読み込みに失敗しました');
+  }
 });
 
 reselectBtn.addEventListener('click', () => {
@@ -159,7 +166,8 @@ reselectBtn.addEventListener('click', () => {
 function updateTrimLabels() {
   trimStartVal.textContent = formatTime(trimSettings.start);
   trimEndVal.textContent = formatTime(trimSettings.end);
-  durationRangeText.textContent = `${formatTime(trimSettings.start)} - ${formatTime(trimSettings.end)} (${(trimSettings.end - trimSettings.start).toFixed(1)}s)`;
+  const diff = Math.max(0.1, trimSettings.end - trimSettings.start);
+  durationRangeText.textContent = `${formatTime(trimSettings.start)} - ${formatTime(trimSettings.end)} (${diff.toFixed(1)}秒)`;
 }
 
 trimStartRange.addEventListener('input', (e) => {
@@ -268,12 +276,14 @@ function applyCropPreset(preset) {
   if (preset === 'none') {
     cropSettings.enabled = false;
     cropContainer.classList.add('hidden');
+    cropAlignControls.classList.add('hidden');
     cropStatusText.textContent = 'なし (全体)';
     return;
   }
 
   cropSettings.enabled = true;
   cropContainer.classList.remove('hidden');
+  cropAlignControls.classList.remove('hidden');
 
   let targetW = originalWidth;
   let targetH = originalHeight;
@@ -281,6 +291,7 @@ function applyCropPreset(preset) {
   let targetY = 0;
 
   if (preset === 'iphone-bar') {
+    // iPhone画面録画: 上部7%（時計・Dynamic Island）、下部4%（ホームバー）を除去
     const topCut = Math.round(originalHeight * 0.07);
     const bottomCut = Math.round(originalHeight * 0.04);
     targetY = topCut;
@@ -317,36 +328,78 @@ cropPresetBtns.forEach(btn => {
   btn.addEventListener('click', () => applyCropPreset(btn.dataset.preset));
 });
 
-// クロップ枠ドラッグ
+// 位置合わせボタン (上寄せ・中央・下寄せ)
+alignTopBtn.addEventListener('click', () => {
+  if (!cropSettings.enabled) return;
+  updateCropBoxUI(cropSettings.x, 0, cropSettings.width, cropSettings.height);
+});
+
+alignCenterBtn.addEventListener('click', () => {
+  if (!cropSettings.enabled) return;
+  const centerY = Math.round((originalHeight - cropSettings.height) / 2);
+  const centerX = Math.round((originalWidth - cropSettings.width) / 2);
+  updateCropBoxUI(centerX, centerY, cropSettings.width, cropSettings.height);
+});
+
+alignBottomBtn.addEventListener('click', () => {
+  if (!cropSettings.enabled) return;
+  const bottomY = Math.max(0, originalHeight - cropSettings.height);
+  updateCropBoxUI(cropSettings.x, bottomY, cropSettings.width, cropSettings.height);
+});
+
+// クロップ枠のタッチ＆ドラッグ（スマホスクロールを完全防止）
 let isDragging = false;
-let dragStartX = 0;
-let dragStartY = 0;
+let touchStartX = 0;
+let touchStartY = 0;
 let initialCropX = 0;
 let initialCropY = 0;
 
-cropBox.addEventListener('pointerdown', (e) => {
+function handleDragStart(clientX, clientY) {
   isDragging = true;
-  dragStartX = e.clientX;
-  dragStartY = e.clientY;
+  touchStartX = clientX;
+  touchStartY = clientY;
   initialCropX = cropSettings.x;
   initialCropY = cropSettings.y;
-  cropBox.setPointerCapture(e.pointerId);
-});
+}
 
-cropBox.addEventListener('pointermove', (e) => {
+function handleDragMove(clientX, clientY) {
   if (!isDragging) return;
   const vRect = getDisplayedVideoRect();
-  const deltaX = (e.clientX - dragStartX) * vRect.scaleX;
-  const deltaY = (e.clientY - dragStartY) * vRect.scaleY;
+  const deltaX = (clientX - touchStartX) * vRect.scaleX;
+  const deltaY = (clientY - touchStartY) * vRect.scaleY;
 
   let newX = Math.max(0, Math.min(originalWidth - cropSettings.width, initialCropX + deltaX));
   let newY = Math.max(0, Math.min(originalHeight - cropSettings.height, initialCropY + deltaY));
 
   updateCropBoxUI(newX, newY, cropSettings.width, cropSettings.height);
-});
+}
 
-cropBox.addEventListener('pointerup', () => { isDragging = false; });
-cropBox.addEventListener('pointercancel', () => { isDragging = false; });
+function handleDragEnd() {
+  isDragging = false;
+}
+
+// マウスイベント
+cropBox.addEventListener('mousedown', (e) => handleDragStart(e.clientX, e.clientY));
+window.addEventListener('mousemove', (e) => { if (isDragging) handleDragMove(e.clientX, e.clientY); });
+window.addEventListener('mouseup', () => handleDragEnd());
+
+// タッチイベント (スマホ専用：画面スクロールを完全に抑止)
+cropBox.addEventListener('touchstart', (e) => {
+  if (e.touches.length === 1) {
+    e.preventDefault(); // スクロール防止
+    handleDragStart(e.touches[0].clientX, e.touches[0].clientY);
+  }
+}, { passive: false });
+
+window.addEventListener('touchmove', (e) => {
+  if (isDragging && e.touches.length === 1) {
+    e.preventDefault(); // スクロール防止
+    handleDragMove(e.touches[0].clientX, e.touches[0].clientY);
+  }
+}, { passive: false });
+
+window.addEventListener('touchend', () => handleDragEnd());
+window.addEventListener('touchcancel', () => handleDragEnd());
 
 // --- 出力フォーマット ---
 formatBtns.forEach(btn => {
@@ -383,15 +436,38 @@ resolutionSelect.addEventListener('change', (e) => {
   outputResolution = e.target.value;
 });
 
-// --- ハードウェア高速変換 (Canvas + MediaRecorder) ---
+// キャンセル制御フラグ
+let isCancelled = false;
+let currentRecorder = null;
+
+// 変換停止ボタンの処理
+cancelConvertBtn.addEventListener('click', () => {
+  isCancelled = true;
+  if (videoPreview) {
+    videoPreview.pause();
+  }
+  if (currentRecorder && currentRecorder.state !== 'inactive') {
+    try {
+      currentRecorder.stop();
+    } catch (e) {}
+  }
+  progressSection.classList.add('hidden');
+  editorSection.classList.remove('hidden');
+  progressBar.style.width = '0%';
+  progressPercent.textContent = '0%';
+});
+
+// --- 変換実行 (切り取り処理) ---
 startConvertBtn.addEventListener('click', async () => {
   if (!currentFile) return;
 
+  isCancelled = false;
   editorSection.classList.add('hidden');
   progressSection.classList.remove('hidden');
   progressBar.style.width = '0%';
   progressPercent.textContent = '0%';
-  progressStatusText.textContent = '変換を開始しています...';
+  progressStatusText.textContent = '切り取り処理を開始中...';
+  lucide.createIcons();
 
   try {
     if (outputFormat === 'gif') {
@@ -402,28 +478,25 @@ startConvertBtn.addEventListener('click', async () => {
       await convertToVideo();
     }
   } catch (err) {
+    if (isCancelled) return; // ユーザーキャンセル時はエラーアラートを出さない
     console.error('Conversion failed:', err);
-    alert('変換中にエラーが発生しました: ' + (err.message || err));
+    alert('切り取り処理中にエラーが発生しました: ' + (err.message || err));
     progressSection.classList.add('hidden');
     editorSection.classList.remove('hidden');
   }
 });
 
-// 1. 動画変換 (MP4 / WebM - MediaRecorder)
+// 1. 動画の切り取り＆エンコード
 async function convertToVideo() {
-  const hiddenVideo = document.createElement('video');
-  hiddenVideo.src = URL.createObjectURL(currentFile);
-  hiddenVideo.muted = false; // 音声を含めるため
-  hiddenVideo.playsInline = true;
-  await new Promise(r => hiddenVideo.onloadedmetadata = r);
+  progressStatusText.textContent = '動画を切り取り＆エンコード中...';
 
-  // 切り抜き範囲と解像度の決定
+  // 切り抜き範囲の決定
   let sx = 0, sy = 0, sw = originalWidth, sh = originalHeight;
   if (cropSettings.enabled) {
-    sx = cropSettings.x;
-    sy = cropSettings.y;
-    sw = cropSettings.width;
-    sh = cropSettings.height;
+    sx = Math.max(0, cropSettings.x);
+    sy = Math.max(0, cropSettings.y);
+    sw = Math.min(originalWidth - sx, cropSettings.width);
+    sh = Math.min(originalHeight - sy, cropSettings.height);
   }
 
   let outW = sw;
@@ -447,65 +520,69 @@ async function convertToVideo() {
   canvas.height = outH;
   const ctx = canvas.getContext('2d');
 
-  // ビットレート設定
-  let bitrate = 3000000; // 3 Mbps (標準)
-  if (outputQuality === 'high') bitrate = 6000000;
-  if (outputQuality === 'small') bitrate = 1200000;
+  // ビットレート
+  let bitrate = 4000000;
+  if (outputQuality === 'high') bitrate = 8000000;
+  if (outputQuality === 'small') bitrate = 1500000;
 
-  // ストリームとエンコーダー準備
   const canvasStream = canvas.captureStream(30);
 
-  // 音声トラックの合成 (Web Audio API)
-  try {
-    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    const source = audioCtx.createMediaElementSource(hiddenVideo);
-    const dest = audioCtx.createMediaStreamDestination();
-    source.connect(dest);
-    // 元の動画に音声があればトラックを追加
-    dest.stream.getAudioTracks().forEach(t => canvasStream.addTrack(t));
-  } catch (e) {
-    console.warn('Audio stream attach skipped:', e);
-  }
-
-  // サポートされているMIMEタイプを検出
+  // iPhoneでサポートされている動画形式を自動判別
   let mimeType = 'video/mp4';
   if (!MediaRecorder.isTypeSupported('video/mp4')) {
-    mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9') ? 'video/webm;codecs=vp9' : 'video/webm';
+    mimeType = MediaRecorder.isTypeSupported('video/mp4;codecs=avc1') ? 'video/mp4;codecs=avc1' : 'video/webm';
   }
 
   const recorder = new MediaRecorder(canvasStream, {
     mimeType: mimeType,
     videoBitsPerSecond: bitrate
   });
+  currentRecorder = recorder;
 
   const chunks = [];
-  recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+  recorder.ondataavailable = e => { if (e.data && e.data.size > 0) chunks.push(e.data); };
 
   const startSec = trimSettings.start;
   const endSec = trimSettings.end;
-  const totalDuration = endSec - startSec;
+  const totalDuration = Math.max(0.2, endSec - startSec);
 
-  hiddenVideo.currentTime = startSec;
-  await new Promise(r => hiddenVideo.onseeked = r);
+  // 画面上のvideoPreviewを使って確実に再生・キャプチャ
+  videoPreview.currentTime = startSec;
+  videoPreview.muted = true; // Safari必須
+  await new Promise(r => {
+    videoPreview.onseeked = r;
+    setTimeout(r, 300);
+  });
 
   recorder.start(100);
-  await hiddenVideo.play();
+  try {
+    await videoPreview.play();
+  } catch (e) {
+    console.warn('Play interrupted, retrying muted...', e);
+    videoPreview.muted = true;
+    await videoPreview.play();
+  }
 
-  // フレーム描画ループ
   let isRunning = true;
   function renderFrame() {
-    if (!isRunning) return;
-    ctx.drawImage(hiddenVideo, sx, sy, sw, sh, 0, 0, outW, outH);
+    if (!isRunning || isCancelled) {
+      isRunning = false;
+      return;
+    }
 
-    const currentProgress = (hiddenVideo.currentTime - startSec) / totalDuration;
-    const pct = Math.min(100, Math.max(0, Math.round(currentProgress * 100)));
+    // クロップ描画
+    ctx.drawImage(videoPreview, sx, sy, sw, sh, 0, 0, outW, outH);
+
+    const currentSec = videoPreview.currentTime;
+    const progress = (currentSec - startSec) / totalDuration;
+    const pct = Math.min(100, Math.max(0, Math.round(progress * 100)));
     progressBar.style.width = `${pct}%`;
     progressPercent.textContent = `${pct}%`;
 
-    if (hiddenVideo.currentTime >= endSec || hiddenVideo.ended) {
+    if (currentSec >= endSec || videoPreview.ended) {
       isRunning = false;
-      hiddenVideo.pause();
-      recorder.stop();
+      videoPreview.pause();
+      if (!isCancelled) recorder.stop();
     } else {
       requestAnimationFrame(renderFrame);
     }
@@ -514,6 +591,7 @@ async function convertToVideo() {
   renderFrame();
 
   await new Promise(resolve => recorder.onstop = resolve);
+  if (isCancelled) return;
 
   const finalExt = mimeType.includes('mp4') ? 'mp4' : 'webm';
   convertedBlob = new Blob(chunks, { type: mimeType });
@@ -524,7 +602,7 @@ async function convertToVideo() {
 async function convertToGIF() {
   progressStatusText.textContent = 'GIFフレームを生成中...';
   const startSec = trimSettings.start;
-  const duration = Math.min(10, trimSettings.end - startSec); // GIFは最大10秒
+  const duration = Math.min(10, trimSettings.end - startSec);
 
   let sx = cropSettings.enabled ? cropSettings.x : 0;
   let sy = cropSettings.enabled ? cropSettings.y : 0;
@@ -535,7 +613,7 @@ async function convertToGIF() {
     video: [URL.createObjectURL(currentFile)],
     offset: startSec,
     duration: duration,
-    numFrames: Math.round(duration * 10), // 10 fps
+    numFrames: Math.round(duration * 10),
     frameDuration: 1,
     sampleInterval: 10,
     videoX: sx,
@@ -551,7 +629,6 @@ async function convertToGIF() {
     }
   }, (obj) => {
     if (!obj.error) {
-      // base64からBlobへ変換
       const byteCharacters = atob(obj.image.split(',')[1]);
       const byteNumbers = new Array(byteCharacters.length);
       for (let i = 0; i < byteCharacters.length; i++) {
@@ -577,14 +654,13 @@ async function convertToAudio() {
   const endSec = trimSettings.end;
   const startSample = Math.floor(startSec * audioBuffer.sampleRate);
   const endSample = Math.floor(endSec * audioBuffer.sampleRate);
-  const length = endSample - startSample;
+  const length = Math.max(1000, endSample - startSample);
 
   const trimmed = audioCtx.createBuffer(audioBuffer.numberOfChannels, length, audioBuffer.sampleRate);
   for (let ch = 0; ch < audioBuffer.numberOfChannels; ch++) {
     trimmed.copyToChannel(audioBuffer.getChannelData(ch).subarray(startSample, endSample), ch, 0);
   }
 
-  // WAVエンコード
   convertedBlob = audioBufferToWavBlob(trimmed);
   finishConversion('wav');
 }
@@ -598,13 +674,12 @@ function audioBufferToWavBlob(buffer) {
   function setUint16(data) { out.setUint16(pos, data, true); pos += 2; }
   function setUint32(data) { out.setUint32(pos, data, true); pos += 4; }
 
-  // RIFF header
   out.setUint32(0, 0x46464952, true); // "RIFF"
   out.setUint32(4, length - 8, true);
   out.setUint32(8, 0x45564157, true); // "WAVE"
   out.setUint32(12, 0x20746d66, true); // "fmt "
   setUint32(16);
-  setUint16(1); // PCM
+  setUint16(1);
   setUint16(numOfChan);
   setUint32(buffer.sampleRate);
   setUint32(buffer.sampleRate * 2 * numOfChan);
@@ -613,7 +688,6 @@ function audioBufferToWavBlob(buffer) {
   out.setUint32(pos, 0x61746164, true); pos += 4; // "data"
   setUint32(length - pos - 4);
 
-  // Channels interleave
   for (let i = 0; i < buffer.length; i++) {
     for (let ch = 0; ch < numOfChan; ch++) {
       let sample = Math.max(-1, Math.min(1, buffer.getChannelData(ch)[i]));
@@ -625,7 +699,6 @@ function audioBufferToWavBlob(buffer) {
   return new Blob([out.buffer], { type: 'audio/wav' });
 }
 
-// 完了処理
 function finishConversion(ext) {
   convertedUrl = URL.createObjectURL(convertedBlob);
 
@@ -666,7 +739,7 @@ shareBtn.addEventListener('click', async () => {
       await navigator.share({
         files: [file],
         title: '変換済み動画',
-        text: 'ビデオコンバーターで変換した動画です'
+        text: 'ビデオコンバーターで切り取った動画です'
       });
     } catch (err) {
       if (err.name !== 'AbortError') console.error('Share failed:', err);
